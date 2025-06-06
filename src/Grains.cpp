@@ -59,8 +59,8 @@ struct GrainsModule : Module
         // Check for clock trigger to start new grain
         if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
             // Randomize grain parameters
-            float startPos = random::uniform() * delayTimeSamples;  // Random start position
-            float speed = 6.0f;         // Speed between 0.5x and 2.5x
+            float startPos = 12000.0f;  // Random start position
+            float speed = 2.0f;         // Speed between 0.5x and 2.5x
             float volume = random::uniform() * 0.5f + 0.5f;        // Volume between 0.5 and 1.0
             float duration = random::uniform() * 0.1f + 0.2f;     // Duration between 50ms and 150ms
             

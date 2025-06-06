@@ -24,7 +24,6 @@ public:
         // Find first inactive grain
         for (size_t i = 0; i < grains.size(); i++) {
             if (!grains[i].isActive()) {
-                printf("Adding grain %d\n", i);
                 grains[i].trigger(startPos, speed, volume, duration);
                 return true;
             }

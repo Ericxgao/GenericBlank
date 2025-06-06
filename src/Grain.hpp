@@ -74,7 +74,7 @@ struct Grain {
         float output = buffer->Read(readPos) * envelopeValue * volume;
         
         // Update read position
-        readPos += (speed - 1.0f);
+        readPos -= (speed - 1.0f);
         
         // Check if grain is finished
         if (envelopeCounter >= envelopeDuration) {
