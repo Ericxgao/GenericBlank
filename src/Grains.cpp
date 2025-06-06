@@ -1,6 +1,7 @@
 #include "plugin.hpp"
 #include "daisysp.h"
 #include "Grain.hpp"
+#include "GrainManager.hpp"
 
 struct GrainsModule : Module
 {
@@ -20,19 +21,19 @@ struct GrainsModule : Module
         NUM_LIGHTS
     };
 
-    float delayTimeSamples = 48000.f;
-    float sampleRate = 48000.f; 
-    daisysp::DelayLine<float, 48000> delayBuffer;
+    static constexpr size_t delayTimeSamples = 96000;
+    size_t sampleRate = 48000.f; 
+    daisysp::DelayLine<float, delayTimeSamples> delayBuffer;
     
     // Grain manager with 8 grains max
     static constexpr size_t MAX_GRAINS = 8;
-    GrainManager<float, 48000, MAX_GRAINS> grainManager;
+    GrainManager grainManager;
 
     // Add Schmitt trigger for clock input
     dsp::SchmittTrigger clockTrigger;
 
     GrainsModule()
-        : grainManager(&delayBuffer, sampleRate)
+        : grainManager(&delayBuffer, sampleRate, MAX_GRAINS)
     {
         config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
         

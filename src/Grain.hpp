@@ -1,10 +1,10 @@
 #pragma once
 #include "daisysp.h"
+#include "GrainEnvelope.hpp"
 
-template<typename T, size_t size>
 struct Grain {
     // Buffer reference
-    daisysp::DelayLine<T, size>* buffer;
+    daisysp::DelayLine<float, 96000>* buffer;
     
     // Grain parameters
     float readPos;        // Current read position in samples
@@ -16,6 +16,7 @@ struct Grain {
     float envelopeValue;  // Current envelope value
     float envelopeDuration; // Duration in samples
     float envelopeCounter;  // Current position in envelope
+    GrainEnvelope* envelope; // Envelope type
     
     // State
     bool active;          // Whether the grain is currently playing
@@ -32,11 +33,21 @@ struct Grain {
         envelopeCounter = 0.0f;
         active = false;
         duration = 0.1f;  // Default 100ms duration
+        envelope = new ADEnvelope(); // Default to AD envelope
     }
     
-    void init(daisysp::DelayLine<T, size>* buf, float sr) {
+    ~Grain() {
+        delete envelope;
+    }
+    
+    void init(daisysp::DelayLine<float, 96000>* buf, float sr) {
         buffer = buf;
         sampleRate = sr;
+    }
+    
+    void setEnvelope(GrainEnvelope* newEnvelope) {
+        delete envelope;
+        envelope = newEnvelope;
     }
     
     void trigger(float startPos, float spd, float vol, float dur) {
@@ -55,8 +66,8 @@ struct Grain {
     float process() {
         if (!active || !buffer) return 0.0f;
         
-        // Process envelope - simple ramp down
-        envelopeValue = 1.0f - (envelopeCounter / envelopeDuration);
+        // Process envelope using the selected envelope type
+        envelopeValue = envelope->process(envelopeCounter, envelopeDuration);
         envelopeCounter += 1.0f;
         
         // Read from buffer at current position
@@ -75,61 +86,5 @@ struct Grain {
     
     bool isActive() const {
         return active;
-    }
-};
-
-// Helper class to manage a fixed number of grains
-template<typename T, size_t size, size_t maxGrains>
-class GrainManager {
-private:
-    Grain<T, size> grains[maxGrains];
-    daisysp::DelayLine<T, size>* buffer;
-    float sampleRate;
-    
-public:
-    GrainManager(daisysp::DelayLine<T, size>* buf, float sr) 
-        : buffer(buf), sampleRate(sr) {
-        // Initialize all grains
-        for (size_t i = 0; i < maxGrains; i++) {
-            grains[i].init(buffer, sampleRate);
-        }
-    }
-    
-    // Find an inactive grain and trigger it
-    bool addGrain(float startPos, float speed, float volume, float duration) {
-        // Find first inactive grain
-        for (size_t i = 0; i < maxGrains; i++) {
-            if (!grains[i].isActive()) {
-                printf("Adding grain %d\n", i);
-                grains[i].trigger(startPos, speed, volume, duration);
-                return true;
-            }
-        }
-        return false; // No free grains available
-    }
-    
-    // Process all grains
-    float process() {
-        float output = 0.0f;
-        for (size_t i = 0; i < maxGrains; i++) {
-            output += grains[i].process();
-        }
-        return output;
-    }
-    
-    // Get number of active grains
-    size_t getActiveGrainCount() const {
-        size_t count = 0;
-        for (size_t i = 0; i < maxGrains; i++) {
-            if (grains[i].isActive()) count++;
-        }
-        return count;
-    }
-    
-    // Clear all grains
-    void clear() {
-        for (size_t i = 0; i < maxGrains; i++) {
-            grains[i].active = false;
-        }
     }
 }; 
