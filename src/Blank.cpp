@@ -1,4 +1,5 @@
 #include "plugin.hpp"
+#include "daisysp.h"
 
 struct BlankModule : Module
 {

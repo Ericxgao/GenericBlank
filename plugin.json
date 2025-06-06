@@ -1,24 +1,46 @@
 {
-    "slug": "generic-blank",
-    "name": "company",
-    "version": "2.1.0",
-    "license": "MIT",
-    "brand": "my-brand",
-    "author": "",
-    "authorEmail": "",
-    "authorUrl": "",
-    "pluginUrl": "",
-    "manualUrl": "",
-    "sourceUrl": "",
-    "donateUrl": "",
-    "changelogUrl": "",
-    "minRackVersion": "2.4.0",
-    "modules": [
-      {
-        "slug": "blank",
-        "name": "Blank",
-        "description": "Generic blank panel",
-        "tags": [ "Visual", "Blank" ]
-      }
-    ]
-  }
+  "slug": "generic-blank",
+  "name": "company",
+  "version": "2.1.0",
+  "license": "MIT",
+  "brand": "my-brand",
+  "author": "",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "minRackVersion": "2.4.0",
+  "modules": [
+    {
+      "slug": "blank",
+      "name": "Blank",
+      "description": "Generic blank panel",
+      "tags": [
+        "Visual",
+        "Blank"
+      ]
+    },
+    {
+      "slug": "DaisyOscillator",
+      "name": "Daisy Oscillator",
+      "description": "Oscillator using DaisySP library with waveform selection and filtering",
+      "tags": [
+        "Oscillator",
+        "VCO"
+      ]
+    },
+    {
+      "slug": "Grains",
+      "name": "Grains",
+      "description": "Granular synthesis module with two inputs and one output",
+      "tags": [
+        "Granular",
+        "Effect",
+        "Sampler"
+      ]
+    }
+  ]
+}
