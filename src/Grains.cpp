@@ -3,11 +3,12 @@
 #include "Grain.hpp"
 #include "GrainManager.hpp"
 #include "GrainAlgorithm.hpp"
+#include "Dattorro.hpp"
 #include <memory>  // Add this for std::make_unique
 
 // Constants
 static constexpr size_t DELAY_TIME_SAMPLES = 48000.0f * 30;
-static constexpr size_t MAX_GRAINS = 32;
+static constexpr size_t MAX_GRAINS = 64;
 
 struct GrainsModule : Module
 {
@@ -40,10 +41,12 @@ struct GrainsModule : Module
     private:
         std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> currentAlgorithm;
         float bufferSize;
+        Dattorro reverb;  // Add Dattorro reverb instance
 
     public:
         GrainsModule()
             : grainManager(&delayBuffer, sampleRate, MAX_GRAINS)
+            , reverb(48000.0, 0.002, 1.0)  // Initialize with 48kHz, 2ms max LFO depth, 1.0 max time scale
         {
             config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
             
@@ -56,7 +59,21 @@ struct GrainsModule : Module
 
             // Initialize with default random algorithm
             currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
-            bufferSize = DELAY_TIME_SAMPLES; // Adjust based on your buffer size
+            bufferSize = DELAY_TIME_SAMPLES;
+
+            // Set default reverb parameters
+        
+            reverb.setTimeScale(1.0);
+            reverb.setPreDelay(0.0);
+            reverb.setDecay(0.7);
+            reverb.setTankDiffusion(0.7);
+            reverb.setTankFilterHighCutFrequency(10);
+            reverb.setTankFilterLowCutFrequency(0);
+            reverb.setInputFilterHighCutoffPitch(10);
+            reverb.setInputFilterLowCutoffPitch(0);
+            reverb.setTankModSpeed(0.5);
+            reverb.setTankModDepth(0.5);
+            reverb.setTankModShape(0.5);
         }
 
         void process(const ProcessArgs& args) override
@@ -64,6 +81,7 @@ struct GrainsModule : Module
             // Update sample rate if it changed
             if (args.sampleRate != sampleRate) {
                 sampleRate = args.sampleRate;
+                reverb.setSampleRate(sampleRate);
             }
             
             // Get audio input and write to buffer
@@ -78,8 +96,11 @@ struct GrainsModule : Module
             // Process all grains and get output
             float output = grainManager.process();
             
+            // Process through reverb
+            reverb.process(output, output);
+            
             // Output the processed signal
-            outputs[AUDIO_OUTPUT].setVoltage(output);
+            outputs[AUDIO_OUTPUT].setVoltage(reverb.getLeftOutput());
         }
 
         void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {

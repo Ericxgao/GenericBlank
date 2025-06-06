@@ -88,8 +88,8 @@ private:
 public:
     CloudGrainAlgorithm(
         float center = 48000.0f * 10.0f,
-        float posSpread = 48000.0f * 10.0f,
-        float dens = 0.80f,
+        float posSpread = 12000.0f,
+        float dens = 1.0f,
         float spd = 1.0f,
         float vol = 0.7f,
         float dur = 4.0f

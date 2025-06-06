@@ -4,6 +4,9 @@ RACK_DIR ?= ../..
 CXXFLAGS += -std=c++14
 FLAGS += -std=c++14
 
+# Add SSE include path
+FLAGS += -I.
+
 # DaisySP configuration
 DAISYSP_DIR = dep/DaisySP
 FLAGS += -I$(DAISYSP_DIR)/Source
@@ -18,10 +21,32 @@ FLAGS += -I$(DAISYSP_DIR)/Source/Sampling
 FLAGS += -I$(DAISYSP_DIR)/Source/Synthesis
 FLAGS += -I$(DAISYSP_DIR)/Source/Utility
 
+# Add DSP directories
+FLAGS += -Idsp
+FLAGS += -Idsp/shaping
+FLAGS += -Idsp/modulation
+FLAGS += -Idsp/generators
+FLAGS += -Idsp/fx
+FLAGS += -Idsp/filters
+FLAGS += -Idsp/delays
+FLAGS += -Iutilities
+FLAGS += -Isimd
+
 SOURCES += src/plugin.cpp
 SOURCES += src/Blank.cpp
 SOURCES += src/DaisyOscillator.cpp
 SOURCES += src/Grains.cpp
+SOURCES += src/Dattorro.cpp
+
+# Add DSP source files recursively
+SOURCES += $(wildcard dsp/*.cpp)
+SOURCES += $(wildcard dsp/shaping/*.cpp)
+SOURCES += $(wildcard dsp/modulation/*.cpp)
+SOURCES += $(wildcard dsp/generators/*.cpp)
+SOURCES += $(wildcard dsp/fx/*.cpp)
+SOURCES += $(wildcard dsp/filters/*.cpp)
+SOURCES += $(wildcard dsp/delays/*.cpp)
+SOURCES += $(wildcard utilities/*.cpp)
 
 # Add all DaisySP source files
 SOURCES += $(wildcard $(DAISYSP_DIR)/Source/Control/*.cpp)
