@@ -2,6 +2,13 @@
 #include "daisysp.h"
 #include "Grain.hpp"
 #include "GrainManager.hpp"
+#include "GrainAlgorithm.hpp"
+#include <memory>  // Add this for std::make_unique
+
+// Constants
+static constexpr size_t DELAY_TIME_SAMPLES = 96000;
+static constexpr size_t MAX_GRAINS = 8;
+static constexpr float DEFAULT_BUFFER_SIZE = 48000.0f;
 
 struct GrainsModule : Module
 {
@@ -21,59 +28,84 @@ struct GrainsModule : Module
         NUM_LIGHTS
     };
 
-    static constexpr size_t delayTimeSamples = 96000;
     size_t sampleRate = 48000.f; 
-    daisysp::DelayLine<float, delayTimeSamples> delayBuffer;
+    daisysp::DelayLine<float, DELAY_TIME_SAMPLES> delayBuffer;
     
-    // Grain manager with 8 grains max
-    static constexpr size_t MAX_GRAINS = 8;
+    // Grain manager with MAX_GRAINS grains max
     GrainManager grainManager;
 
     // Add Schmitt trigger for clock input
     dsp::SchmittTrigger clockTrigger;
 
-    GrainsModule()
-        : grainManager(&delayBuffer, sampleRate, MAX_GRAINS)
-    {
-        config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
-        
-        configInput(CLOCK_INPUT, "Clock");
-        configInput(AUDIO_INPUT, "Audio Input");
-        configOutput(AUDIO_OUTPUT, "Audio Output");
-        
-        // Initialize the delay buffer
-        delayBuffer.Init();
-    }
+    // Add these as member variables to your Grains class
+    private:
+        std::unique_ptr<GrainAlgorithm> currentAlgorithm;
+        float bufferSize;
 
-    void process(const ProcessArgs& args) override
-    {
-        // Update sample rate if it changed
-        if (args.sampleRate != sampleRate) {
-            sampleRate = args.sampleRate;
-        }
-        
-        // Get audio input and write to buffer
-        float audioInput = inputs[AUDIO_INPUT].getVoltage();
-        delayBuffer.Write(audioInput);
-        
-        // Check for clock trigger to start new grain
-        if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
-            // Randomize grain parameters
-            float startPos = 12000.0f;  // Random start position
-            float speed = 2.0f;         // Speed between 0.5x and 2.5x
-            float volume = random::uniform() * 0.5f + 0.5f;        // Volume between 0.5 and 1.0
-            float duration = random::uniform() * 0.1f + 0.2f;     // Duration between 50ms and 150ms
+    public:
+        GrainsModule()
+            : grainManager(&delayBuffer, sampleRate, MAX_GRAINS)
+        {
+            config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
             
-            // Try to add new grain
-            grainManager.addGrain(startPos, speed, volume, duration);
+            configInput(CLOCK_INPUT, "Clock");
+            configInput(AUDIO_INPUT, "Audio Input");
+            configOutput(AUDIO_OUTPUT, "Audio Output");
+            
+            // Initialize the delay buffer
+            delayBuffer.Init();
+
+            // Initialize with default random algorithm
+            currentAlgorithm = std::make_unique<RandomGrainAlgorithm>();
+            bufferSize = DEFAULT_BUFFER_SIZE; // Adjust based on your buffer size
         }
-        
-        // Process all grains and get output
-        float output = grainManager.process();
-        
-        // Output the processed signal
-        outputs[AUDIO_OUTPUT].setVoltage(output);
-    }
+
+        void process(const ProcessArgs& args) override
+        {
+            // Update sample rate if it changed
+            if (args.sampleRate != sampleRate) {
+                sampleRate = args.sampleRate;
+            }
+            
+            // Get audio input and write to buffer
+            float audioInput = inputs[AUDIO_INPUT].getVoltage();
+            delayBuffer.Write(audioInput);
+            
+            // Check for clock trigger to start new grain
+            if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
+                generateGrain();
+            }
+            
+            // Process all grains and get output
+            float output = grainManager.process();
+            
+            // Output the processed signal
+            outputs[AUDIO_OUTPUT].setVoltage(output);
+        }
+
+        void setAlgorithm(std::unique_ptr<GrainAlgorithm> newAlgorithm) {
+            currentAlgorithm = std::move(newAlgorithm);
+        }
+
+        // Replace your existing grain generation code with:
+        void generateGrain() {
+            if (currentAlgorithm) {
+                currentAlgorithm->generateGrains(grainManager, bufferSize);
+            }
+        }
+
+        // Example methods to switch algorithms
+        void setRandomAlgorithm() {
+            currentAlgorithm = std::make_unique<RandomGrainAlgorithm>();
+        }
+
+        void setSequentialAlgorithm() {
+            currentAlgorithm = std::make_unique<SequentialGrainAlgorithm>();
+        }
+
+        void setCloudAlgorithm() {
+            currentAlgorithm = std::make_unique<CloudGrainAlgorithm>();
+        }
 };
 
 struct GrainsModuleWidget : ModuleWidget

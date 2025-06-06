@@ -55,6 +55,8 @@ struct Grain {
         speed = spd;
         volume = vol;
         duration = dur;
+
+        printf("triggering with startPos: %f, speed: %f, volume: %f, duration: %f\n", startPos, speed, volume, duration);
         
         // Initialize envelope
         envelopeDuration = duration * sampleRate; // Convert seconds to samples

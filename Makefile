@@ -1,5 +1,9 @@
 RACK_DIR ?= ../..
 
+# Ensure C++14 is enabled
+CXXFLAGS += -std=c++14
+FLAGS += -std=c++14
+
 # DaisySP configuration
 DAISYSP_DIR = dep/DaisySP
 FLAGS += -I$(DAISYSP_DIR)/Source
