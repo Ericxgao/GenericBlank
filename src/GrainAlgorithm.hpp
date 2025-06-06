@@ -42,7 +42,7 @@ public:
 
         printf("generating grains with startPos: %f, speed: %f, volume: %f, duration: %f\n", startPos, speed, volume, duration);
         
-        manager.addGrain(startPos, speed, volume, duration);
+        manager.addGrain(startPos, speed, volume, duration, 0.1f, true);
     }
 };
 
@@ -66,7 +66,7 @@ public:
         speed(spd), volume(vol), duration(dur) {}
 
     void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
-        manager.addGrain(currentPos, speed, volume, duration);
+        manager.addGrain(currentPos, speed, volume, duration, 0.1f, true);
         currentPos += stepSize;
         if (currentPos >= bufferSize) {
             currentPos = 0.0f;
@@ -87,7 +87,7 @@ private:
 
 public:
     CloudGrainAlgorithm(
-        float center = 48000.0f * 10.0f,
+        float center = 48000.0f * 1.0f,
         float posSpread = 12000.0f,
         float dens = 1.0f,
         float spd = 1.0f,
@@ -106,7 +106,7 @@ public:
             float speedOptions[] = {0.5f, 2.0f, 1.0f};
             int speedIndex = static_cast<int>(random::uniform() * 3);
             speed = speedOptions[speedIndex];
-            manager.addGrain(startPos, speed, volume, randomDuration);
+            manager.addGrain(startPos, speed, volume, 0.01f, 2.0f, true);
         }
     }
 };

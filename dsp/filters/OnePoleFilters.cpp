@@ -33,8 +33,6 @@ void OnePoleLPFilter::setCutoffFreq(double cutoffFreq) {
     }
 
     assert(cutoffFreq > 0.0);
-    printf("cutoffFreq: %f\n", cutoffFreq);
-    printf("maxCutoffFreq: %f\n", _maxCutoffFreq);
     assert(cutoffFreq <= _maxCutoffFreq);
 
     _cutoffFreq = cutoffFreq;

@@ -62,7 +62,6 @@ struct GrainsModule : Module
             bufferSize = DELAY_TIME_SAMPLES;
 
             // Set default reverb parameters
-        
             reverb.setTimeScale(1.0);
             reverb.setPreDelay(0.0);
             reverb.setDecay(0.7);
