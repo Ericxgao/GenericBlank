@@ -6,9 +6,8 @@
 #include <memory>  // Add this for std::make_unique
 
 // Constants
-static constexpr size_t DELAY_TIME_SAMPLES = 96000;
-static constexpr size_t MAX_GRAINS = 8;
-static constexpr float DEFAULT_BUFFER_SIZE = 48000.0f;
+static constexpr size_t DELAY_TIME_SAMPLES = 48000.0f * 30;
+static constexpr size_t MAX_GRAINS = 32;
 
 struct GrainsModule : Module
 {
@@ -32,14 +31,14 @@ struct GrainsModule : Module
     daisysp::DelayLine<float, DELAY_TIME_SAMPLES> delayBuffer;
     
     // Grain manager with MAX_GRAINS grains max
-    GrainManager grainManager;
+    GrainManager<float, DELAY_TIME_SAMPLES> grainManager;
 
     // Add Schmitt trigger for clock input
     dsp::SchmittTrigger clockTrigger;
 
     // Add these as member variables to your Grains class
     private:
-        std::unique_ptr<GrainAlgorithm> currentAlgorithm;
+        std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> currentAlgorithm;
         float bufferSize;
 
     public:
@@ -56,8 +55,8 @@ struct GrainsModule : Module
             delayBuffer.Init();
 
             // Initialize with default random algorithm
-            currentAlgorithm = std::make_unique<RandomGrainAlgorithm>();
-            bufferSize = DEFAULT_BUFFER_SIZE; // Adjust based on your buffer size
+            currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
+            bufferSize = DELAY_TIME_SAMPLES; // Adjust based on your buffer size
         }
 
         void process(const ProcessArgs& args) override
@@ -83,7 +82,7 @@ struct GrainsModule : Module
             outputs[AUDIO_OUTPUT].setVoltage(output);
         }
 
-        void setAlgorithm(std::unique_ptr<GrainAlgorithm> newAlgorithm) {
+        void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {
             currentAlgorithm = std::move(newAlgorithm);
         }
 
@@ -96,15 +95,15 @@ struct GrainsModule : Module
 
         // Example methods to switch algorithms
         void setRandomAlgorithm() {
-            currentAlgorithm = std::make_unique<RandomGrainAlgorithm>();
+            currentAlgorithm = std::make_unique<RandomGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
         }
 
         void setSequentialAlgorithm() {
-            currentAlgorithm = std::make_unique<SequentialGrainAlgorithm>();
+            currentAlgorithm = std::make_unique<SequentialGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
         }
 
         void setCloudAlgorithm() {
-            currentAlgorithm = std::make_unique<CloudGrainAlgorithm>();
+            currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
         }
 };
 

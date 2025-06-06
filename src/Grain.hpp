@@ -2,9 +2,10 @@
 #include "daisysp.h"
 #include "GrainEnvelope.hpp"
 
+template<typename T, size_t BufferSize>
 struct Grain {
     // Buffer reference
-    daisysp::DelayLine<float, 96000>* buffer;
+    daisysp::DelayLine<T, BufferSize>* buffer;
     
     // Grain parameters
     float readPos;        // Current read position in samples
@@ -40,7 +41,7 @@ struct Grain {
         delete envelope;
     }
     
-    void init(daisysp::DelayLine<float, 96000>* buf, float sr) {
+    void init(daisysp::DelayLine<T, BufferSize>* buf, float sr) {
         buffer = buf;
         sampleRate = sr;
     }
@@ -73,7 +74,7 @@ struct Grain {
         envelopeCounter += 1.0f;
         
         // Read from buffer at current position
-        float output = buffer->Read(readPos) * envelopeValue * volume;
+        float output = buffer->ReadHermite(readPos) * envelopeValue * volume;
         
         // Update read position
         readPos -= (speed - 1.0f);

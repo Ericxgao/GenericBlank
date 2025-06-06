@@ -3,13 +3,14 @@
 #include <vector>
 
 // Helper class to manage a fixed number of grains
+template<typename T, size_t BufferSize>
 class GrainManager {
 private:
-    std::vector<Grain> grains;
+    std::vector<Grain<T, BufferSize>> grains;
     float sampleRate;
     
 public:
-    GrainManager(daisysp::DelayLine<float, 96000>* buf, float sr, size_t maxGrains) 
+    GrainManager(daisysp::DelayLine<T, BufferSize>* buf, float sr, size_t maxGrains) 
         : sampleRate(sr) {
         // Initialize grains vector with maxGrains
         grains.resize(maxGrains);
@@ -35,7 +36,7 @@ public:
     float process() {
         float output = 0.0f;
         for (size_t i = 0; i < grains.size(); i++) {
-            output += grains[i].process();
+            output += grains[i].process() / grains.size();
         }
         return output;
     }
