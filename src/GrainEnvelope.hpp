@@ -12,7 +12,7 @@ public:
 class ADEnvelope : public GrainEnvelope {
 public:
     float process(float counter, float duration) override {
-        float attackDuration = duration * 0.01f; // 10% attack
+        float attackDuration = duration * 0.05f; // 10% attack
         if (counter < attackDuration) {
             return counter / attackDuration;
         } else {

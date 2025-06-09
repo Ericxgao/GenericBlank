@@ -93,7 +93,7 @@ struct Grain {
         if (loop && durationCounter % (int)(duration * sampleRate) == 0) {
             printf("looping\n");
             int loopCount = durationCounter / (int)(duration * sampleRate);
-            readPos = startPos + (duration * sampleRate) - (loopCount * duration * sampleRate);
+            readPos = startPos + (loopCount * duration * sampleRate);
         }
         
         // Check if grain is finished

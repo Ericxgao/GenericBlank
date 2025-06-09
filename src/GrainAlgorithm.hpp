@@ -106,7 +106,7 @@ public:
             float speedOptions[] = {0.5f, 2.0f, 1.0f};
             int speedIndex = static_cast<int>(random::uniform() * 3);
             speed = speedOptions[speedIndex];
-            manager.addGrain(startPos, speed, volume, 0.01f, 2.0f, true);
+            manager.addGrain(startPos, speed, volume, 0.1f, 4.0f, true);
         }
     }
 };

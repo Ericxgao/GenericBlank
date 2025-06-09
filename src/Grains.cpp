@@ -96,10 +96,11 @@ struct GrainsModule : Module
             float output = grainManager.process();
             
             // Process through reverb
-            reverb.process(output, output);
+            // reverb.process(output, output);
             
             // Output the processed signal
-            outputs[AUDIO_OUTPUT].setVoltage(reverb.getLeftOutput());
+            // outputs[AUDIO_OUTPUT].setVoltage(reverb.getLeftOutput());
+            outputs[AUDIO_OUTPUT].setVoltage(output);
         }
 
         void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {
