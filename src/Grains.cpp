@@ -13,6 +13,11 @@ static constexpr size_t MAX_GRAINS = 64;
 struct GrainsModule : Module
 {
     enum Params {
+        DENSITY_PARAM,
+        DURATION_PARAM,
+        ENV_DURATION_PARAM,
+        SPEED_PARAM,
+        DELAY_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
@@ -50,6 +55,13 @@ struct GrainsModule : Module
         {
             config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
             
+            // Configure parameters
+            configParam(DENSITY_PARAM, 0.0f, 1.0f, 0.5f, "Density");
+            configParam(DURATION_PARAM, 0.01f, 1.0f, 0.1f, "Duration", "s");
+            configParam(ENV_DURATION_PARAM, 0.01f, 1.0f, 0.1f, "Envelope Duration", "s");
+            configParam(SPEED_PARAM, -2.0f, 2.0f, 0.0f, "Speed", "V/oct");
+            configParam(DELAY_PARAM, 0.0f, 1.0f, 0.0f, "Delay", "s");
+            
             configInput(CLOCK_INPUT, "Clock");
             configInput(AUDIO_INPUT, "Audio Input");
             configOutput(AUDIO_OUTPUT, "Audio Output");
@@ -58,7 +70,7 @@ struct GrainsModule : Module
             delayBuffer.Init();
 
             // Initialize with default random algorithm
-            currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
+            currentAlgorithm = std::make_unique<BaseAlgorithm<float, DELAY_TIME_SAMPLES>>();
             bufferSize = DELAY_TIME_SAMPLES;
 
             // Set default reverb parameters
@@ -87,6 +99,17 @@ struct GrainsModule : Module
             float audioInput = inputs[AUDIO_INPUT].getVoltage();
             delayBuffer.Write(audioInput);
             
+            // Update algorithm parameters
+            if (auto* baseAlgo = dynamic_cast<BaseAlgorithm<float, DELAY_TIME_SAMPLES>*>(currentAlgorithm.get())) {
+                float density = params[DENSITY_PARAM].getValue();
+                float duration = params[DURATION_PARAM].getValue();
+                float envDuration = params[ENV_DURATION_PARAM].getValue();
+                float speed = std::pow(2.0f, params[SPEED_PARAM].getValue()); // Convert V/oct to speed multiplier
+                float delay = params[DELAY_PARAM].getValue();
+                
+                baseAlgo->setParameters(density, duration, envDuration, speed, delay);
+            }
+            
             // Check for clock trigger to start new grain
             if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
                 generateGrain();
@@ -95,11 +118,10 @@ struct GrainsModule : Module
             // Process all grains and get output
             float output = grainManager.process();
             
-            // Process through reverb
-            // reverb.process(output, output);
+            // Scale up the output to proper voltage levels
+            output *= 5.0f;  // Scale to ±5V range
             
             // Output the processed signal
-            // outputs[AUDIO_OUTPUT].setVoltage(reverb.getLeftOutput());
             outputs[AUDIO_OUTPUT].setVoltage(output);
         }
 
@@ -155,12 +177,19 @@ struct GrainsModuleWidget : ModuleWidget
         addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
         addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
+        // Add knobs
+        addParam(createParamCentered<RoundBlackKnob>(Vec(30, 80), module, GrainsModule::DENSITY_PARAM));
+        addParam(createParamCentered<RoundBlackKnob>(Vec(60, 80), module, GrainsModule::DURATION_PARAM));
+        addParam(createParamCentered<RoundBlackKnob>(Vec(30, 120), module, GrainsModule::ENV_DURATION_PARAM));
+        addParam(createParamCentered<RoundBlackKnob>(Vec(60, 120), module, GrainsModule::SPEED_PARAM));
+        addParam(createParamCentered<RoundBlackKnob>(Vec(45, 160), module, GrainsModule::DELAY_PARAM));
+
         // Inputs
-        addInput(createInputCentered<PJ301MPort>(Vec(30, 160), module, GrainsModule::CLOCK_INPUT));
-        addInput(createInputCentered<PJ301MPort>(Vec(60, 160), module, GrainsModule::AUDIO_INPUT));
+        addInput(createInputCentered<PJ301MPort>(Vec(30, 200), module, GrainsModule::CLOCK_INPUT));
+        addInput(createInputCentered<PJ301MPort>(Vec(60, 200), module, GrainsModule::AUDIO_INPUT));
 
         // Output
-        addOutput(createOutputCentered<PJ301MPort>(Vec(45, 200), module, GrainsModule::AUDIO_OUTPUT));
+        addOutput(createOutputCentered<PJ301MPort>(Vec(45, 240), module, GrainsModule::AUDIO_OUTPUT));
     }
 };
 
