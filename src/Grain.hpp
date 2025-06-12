@@ -85,25 +85,27 @@ struct Grain {
         
         float envelopeValue = envelope->process(currentSample, envelopeDurationSamples);
         
-        // Linear interpolation for playback speed
-        int idx1 = (int)readPos;
-        float frac = readPos - idx1;
-        T s1 = grainBuffer[idx1];
-        T s2 = grainBuffer[(idx1 + 1) % (int)durationSamples];
-        float output = (s1 + (s2 - s1) * frac);
+        int dur = static_cast<int>(durationSamples);
+        if (dur <= 0) {
+            active = false;
+            return 0.0f;
+        }
+
+        float output = interpolate(dur);
 
         output *= envelopeValue * volume;
         
         readPos += speed;
 
         if (loop) {
-            if (readPos >= durationSamples) {
+            while (readPos >= durationSamples) {
                 readPos -= durationSamples;
-            } else if(readPos < 0.0f) {
+            }
+            while (readPos < 0.0f) {
                 readPos += durationSamples;
             }
         } else {
-            if (readPos >= durationSamples) {
+            if (readPos >= durationSamples || readPos < 0.0f) {
                 active = false;
             }
         }
@@ -118,5 +120,41 @@ struct Grain {
     
     bool isActive() const {
         return active;
+    }
+
+private:
+    float interpolate(int dur) const {
+        // 4-point, 3rd-order Hermite interpolation for playback speed
+        int idx1 = static_cast<int>(readPos);
+        float frac = readPos - idx1;
+
+        T y0, y1, y2, y3;
+
+        if (loop) {
+            auto get_index = [&](int i) {
+                return ((i % dur) + dur) % dur;
+            };
+            y0 = grainBuffer[get_index(idx1 - 1)];
+            y1 = grainBuffer[get_index(idx1)];
+            y2 = grainBuffer[get_index(idx1 + 1)];
+            y3 = grainBuffer[get_index(idx1 + 2)];
+        } else {
+            // Clamp indices to the valid range [0, dur - 1]
+            auto clamp = [&](int i) {
+                if (i < 0) return 0;
+                if (i >= dur) return dur - 1;
+                return i;
+            };
+            y0 = grainBuffer[clamp(idx1 - 1)];
+            y1 = grainBuffer[clamp(idx1)];
+            y2 = grainBuffer[clamp(idx1 + 1)];
+            y3 = grainBuffer[clamp(idx1 + 2)];
+        }
+
+        float c0 = y1;
+        float c1 = 0.5f * (y2 - y0);
+        float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        float c3 = -0.5f * y0 + 1.5f * y1 - 1.5f * y2 + 0.5f * y3;
+        return ((c3 * frac + c2) * frac + c1) * frac + c0;
     }
 }; 
