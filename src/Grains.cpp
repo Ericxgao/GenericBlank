@@ -104,7 +104,7 @@ struct GrainsModule : Module
                 float density = params[DENSITY_PARAM].getValue();
                 float duration = params[DURATION_PARAM].getValue();
                 float envDuration = params[ENV_DURATION_PARAM].getValue();
-                float speed = std::pow(2.0f, params[SPEED_PARAM].getValue()); // Convert V/oct to speed multiplier
+                float speed = 2.0f * params[SPEED_PARAM].getValue(); // Convert V/oct to speed multiplier
                 float delay = params[DELAY_PARAM].getValue();
                 
                 baseAlgo->setParameters(density, duration, envDuration, speed, delay);

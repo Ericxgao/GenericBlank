@@ -2,40 +2,43 @@
 #include "daisysp.h"
 #include "GrainEnvelope.hpp"
 
-template<typename T, size_t BufferSize>
+// Maximum duration of a grain in samples.
+// e.g. 48000 samples is 1 second at 48kHz.
+// This determines the memory usage of each grain object.
+#ifndef MAX_GRAIN_SAMPLES
+#define MAX_GRAIN_SAMPLES 48000
+#endif
+
+template<typename T>
 struct Grain {
-    // Buffer reference
-    daisysp::DelayLine<T, BufferSize>* buffer;
+    T grainBuffer[MAX_GRAIN_SAMPLES]; // Local buffer for this grain
     
     // Grain parameters
-    float readPosSamples;        // Current read position in samples
-    float speed;          // Playback speed (1.0 = normal, 2.0 = double speed, etc.)
+    float readPos;        // Current read position in samples
+    float speed;          // Playback speed (1.0 = normal)
     float volume;         // Base volume of the grain
     float sampleRate;     // Sample rate of the buffer
-    bool loop;           // Whether the grain should loop
-    float startPosSamples;      // Original start position in samples
-    float durationSamples;       // Duration of the grain in samples
+    bool loop;            // Whether the grain should loop
+    float durationSamples; // Active duration of the grain in samples
 
     // Envelope
-    float envelopeValue;  // Current envelope value
-    float envelopeDurationSamples;  // Current position in envelope in samples
-    GrainEnvelope* envelope; // Envelope type
+    GrainEnvelope* envelope; // Envelope generator
+    float envelopeDurationSamples;
     
     // State
     bool active;          // Whether the grain is currently playing
-    int durationCounter; // Current position in duration in samples
+    float currentSample;  // How many samples have been processed
     
     Grain() {
-        buffer = nullptr;
-        readPosSamples = 12000.0f;
+        active = false;
         speed = 1.0f;
         volume = 1.0f;
         sampleRate = 48000.0f;
-        envelopeValue = 0.0f;
+        currentSample = 0.0f;
+        durationSamples = 0.0f;
+        readPos = 0.0f;
+        loop = false;
         envelopeDurationSamples = 0.0f;
-        durationCounter = 0.0f;
-        active = false;
-        durationSamples = 4800.0f;  // Default 100ms duration at 48kHz
         envelope = new ADEnvelope(); // Default to AD envelope
     }
     
@@ -43,56 +46,70 @@ struct Grain {
         delete envelope;
     }
     
-    void init(daisysp::DelayLine<T, BufferSize>* buf, float sr) {
-        buffer = buf;
+    void init(float sr) {
         sampleRate = sr;
     }
     
     void setEnvelope(GrainEnvelope* newEnvelope) {
-        delete envelope;
+        if (envelope) {
+            delete envelope;
+        }
         envelope = newEnvelope;
     }
     
-    void trigger(float startPosSeconds, float spd, float vol, float durSeconds, float envDurSeconds, bool loop) {
-        // Convert all time-based parameters from seconds to samples
-        this->startPosSamples = startPosSeconds * sampleRate;
-        readPosSamples = startPosSeconds * sampleRate;
+    template <size_t BufferSize>
+    void trigger(daisysp::DelayLine<T, BufferSize>* mainBuffer, float startPosSeconds, float spd, float vol, float durSeconds, float envDurSeconds, bool l) {
+        durationSamples = durSeconds * sampleRate;
+        if (durationSamples > MAX_GRAIN_SAMPLES) {
+            durationSamples = MAX_GRAIN_SAMPLES;
+            // Optional: Log a warning about truncation
+        }
+        envelopeDurationSamples = envDurSeconds * sampleRate;
+
+        float startPosSamples = startPosSeconds * sampleRate;
+        for (size_t i = 0; i < durationSamples; ++i) {
+            grainBuffer[i] = mainBuffer->Read(startPosSamples + i);
+        }
+        
         speed = spd;
         volume = vol;
-        durationSamples = durSeconds * sampleRate;
-        this->loop = loop;
-        printf("triggering with startPos: %f, speed: %f, volume: %f, duration: %f, envDur: %f, loop: %d\n", 
-               startPosSeconds, speed, volume, durSeconds, envDurSeconds, (int)loop);
+        loop = l;
         
-        // Initialize envelope
-        envelopeDurationSamples = envDurSeconds * sampleRate; // Convert seconds to samples
-        durationCounter = 0;
-        envelopeValue = 1.0f;
+        currentSample = 0.0f;
+        readPos = 0.0f;
         active = true;
     }
     
     float process() {
-        if (!active || !buffer) return 0.0f;
+        if (!active) return 0.0f;
         
-        // Process envelope using the selected envelope type
-        envelopeValue = envelope->process(durationCounter, envelopeDurationSamples);
-        durationCounter += 1;
+        float envelopeValue = envelope->process(currentSample, envelopeDurationSamples);
         
-        // Read from buffer at current position
-        float output = buffer->ReadHermite(readPosSamples) * envelopeValue * volume;
-        
-        // Update read position
-        readPosSamples -= (speed - 1.0f);
+        // Linear interpolation for playback speed
+        int idx1 = (int)readPos;
+        float frac = readPos - idx1;
+        T s1 = grainBuffer[idx1];
+        T s2 = grainBuffer[(idx1 + 1) % (int)durationSamples];
+        float output = (s1 + (s2 - s1) * frac);
 
-        // Check if grain needs to loop
-        if (loop && durationCounter % (int)durationSamples == 0) {
-            printf("looping\n");
-            int loopCount = durationCounter / (int)durationSamples;
-            readPosSamples = startPosSamples + (loopCount * durationSamples);
-        }
+        output *= envelopeValue * volume;
         
-        // Check if grain is finished
-        if (durationCounter >= envelopeDurationSamples) {
+        readPos += speed;
+
+        if (loop) {
+            if (readPos >= durationSamples) {
+                readPos -= durationSamples;
+            } else if(readPos < 0.0f) {
+                readPos += durationSamples;
+            }
+        } else {
+            if (readPos >= durationSamples) {
+                active = false;
+            }
+        }
+
+        currentSample += 1.0f;
+        if(currentSample >= envelopeDurationSamples) {
             active = false;
         }
         

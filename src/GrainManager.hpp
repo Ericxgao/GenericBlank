@@ -6,26 +6,28 @@
 template<typename T, size_t BufferSize>
 class GrainManager {
 private:
-    std::vector<Grain<T, BufferSize>> grains;
+    std::vector<Grain<T>> grains;
+    daisysp::DelayLine<T, BufferSize>* mainBuffer;
     float sampleRate;
     
 public:
     GrainManager(daisysp::DelayLine<T, BufferSize>* buf, float sr, size_t maxGrains) 
-        : sampleRate(sr) {
+        : mainBuffer(buf), sampleRate(sr) {
         // Initialize grains vector with maxGrains
         grains.resize(maxGrains);
         // Initialize all grains
         for (size_t i = 0; i < maxGrains; i++) {
-            grains[i].init(buf, sampleRate);
+            grains[i].init(sampleRate);
         }
     }
     
     // Find an inactive grain and trigger it
-    bool addGrain(float startPos, float speed, float volume, float duration, float envDur, bool loop) {
+    bool addGrain(float startPosSamples, float speed, float volume, float duration, float envDur, bool loop) {
         // Find first inactive grain
         for (size_t i = 0; i < grains.size(); i++) {
             if (!grains[i].isActive()) {
-                grains[i].trigger(startPos, speed, volume, duration, envDur, loop);
+                float startPosSeconds = startPosSamples / sampleRate;
+                grains[i].trigger(mainBuffer, startPosSeconds, speed, volume, duration, envDur, loop);
                 return true;
             }
         }
