@@ -19,6 +19,7 @@ protected:
     float envelopeDuration;
     float speed;
     float delay;
+    float pan;
 
 public:
     BaseAlgorithm(
@@ -26,20 +27,22 @@ public:
         float dur = 0.1f,
         float envDur = 0.1f,
         float spd = 1.0f,
-        float dly = 0.0f
-    ) : density(dens), duration(dur), envelopeDuration(envDur), speed(spd), delay(dly) {}
+        float dly = 0.0f,
+        float p = 0.0f
+    ) : density(dens), duration(dur), envelopeDuration(envDur), speed(spd), delay(dly), pan(p) {}
 
-    void setParameters(float dens, float dur, float envDur, float spd, float dly) {
+    void setParameters(float dens, float dur, float envDur, float spd, float dly, float p) {
         density = dens;
         duration = dur;
         envelopeDuration = envDur;
         speed = spd;
         delay = dly;
+        pan = p;
     }
 
     virtual void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
         if (random::uniform() < density) {
-            manager.addGrain(delay, speed, 1.0f, duration, envelopeDuration, true);
+            manager.addGrain(delay, speed, 1.0f, duration, envelopeDuration, true, pan);
         }
     }
 };
@@ -59,8 +62,8 @@ public:
         float minVol = 0.5f, float maxVol = 1.0f,
         float dens = 1.0f, float dur = 0.1f,
         float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly),
+        float dly = 0.0f, float p = 0.0f
+    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
         minStartPos(minStart), maxStartPos(maxStart),
         minVolume(minVol), maxVolume(maxVol) {}
 
@@ -68,7 +71,7 @@ public:
         if (random::uniform() < this->density) {
             float startPos = this->delay * 48000.0f + random::uniform() * (maxStartPos - minStartPos) + minStartPos;
             float volume = random::uniform() * (maxVolume - minVolume) + minVolume;
-            manager.addGrain(startPos, this->speed, volume, this->duration, this->envelopeDuration, true);
+            manager.addGrain(startPos, this->speed, volume, this->duration, this->envelopeDuration, true, this->pan);
         }
     }
 };
@@ -85,14 +88,14 @@ public:
         float step = 100.0f,
         float dens = 1.0f, float dur = 0.1f,
         float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly),
+        float dly = 0.0f, float p = 0.0f
+    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
         stepSize(step), currentPos(0.0f) {}
 
     void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
         if (random::uniform() < this->density) {
             float startPos = this->delay * 48000.0f + currentPos;
-            manager.addGrain(startPos, this->speed, 1.0f, this->duration, this->envelopeDuration, true);
+            manager.addGrain(startPos, this->speed, 1.0f, this->duration, this->envelopeDuration, true, this->pan);
             currentPos += stepSize;
             if (currentPos >= bufferSize) {
                 currentPos = 0.0f;
@@ -114,8 +117,8 @@ public:
         float posSpread = 12000.0f,
         float dens = 1.0f, float dur = 0.1f,
         float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly),
+        float dly = 0.0f, float p = 0.0f
+    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
         centerPos(center), spread(posSpread) {}
 
     void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
@@ -125,7 +128,7 @@ public:
             float speedOptions[] = {0.5f, 2.0f, 1.0f};
             int speedIndex = static_cast<int>(random::uniform() * 3);
             float finalSpeed = this->speed * speedOptions[speedIndex];
-            manager.addGrain(startPos, finalSpeed, 1.0f, this->duration, this->envelopeDuration, true);
+            manager.addGrain(startPos, finalSpeed, 1.0f, this->duration, this->envelopeDuration, true, this->pan);
         }
     }
 };

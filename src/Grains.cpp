@@ -18,15 +18,18 @@ struct GrainsModule : Module
         ENV_DURATION_PARAM,
         SPEED_PARAM,
         DELAY_PARAM,
+        PAN_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
         CLOCK_INPUT,
-        AUDIO_INPUT,
+        AUDIO_INPUT_L,
+        AUDIO_INPUT_R,
         NUM_INPUTS
     };
     enum Outputs {
-        AUDIO_OUTPUT,
+        AUDIO_OUTPUT_L,
+        AUDIO_OUTPUT_R,
         NUM_OUTPUTS
     };
     enum Lights {
@@ -34,7 +37,8 @@ struct GrainsModule : Module
     };
 
     size_t sampleRate = 48000.f; 
-    daisysp::DelayLine<float, DELAY_TIME_SAMPLES> delayBuffer;
+    daisysp::DelayLine<float, DELAY_TIME_SAMPLES> delayBufferL;
+    daisysp::DelayLine<float, DELAY_TIME_SAMPLES> delayBufferR;
     
     // Grain manager with MAX_GRAINS grains max
     GrainManager<float, DELAY_TIME_SAMPLES> grainManager;
@@ -50,24 +54,28 @@ struct GrainsModule : Module
 
     public:
         GrainsModule()
-            : grainManager(&delayBuffer, sampleRate, MAX_GRAINS)
+            : grainManager(&delayBufferL, &delayBufferR, sampleRate, MAX_GRAINS)
             , reverb(48000.0, 0.002, 1.0)  // Initialize with 48kHz, 2ms max LFO depth, 1.0 max time scale
         {
             config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
             
             // Configure parameters
             configParam(DENSITY_PARAM, 0.0f, 1.0f, 0.5f, "Density");
-            configParam(DURATION_PARAM, 0.01f, 1.0f, 0.1f, "Duration", "s");
-            configParam(ENV_DURATION_PARAM, 0.01f, 1.0f, 0.1f, "Envelope Duration", "s");
-            configParam(SPEED_PARAM, -2.0f, 2.0f, 0.0f, "Speed", "V/oct");
-            configParam(DELAY_PARAM, 0.0f, 1.0f, 0.0f, "Delay", "s");
+            configParam(DURATION_PARAM, 0.01f, 5.0f, 0.1f, "Duration", "s");
+            configParam(ENV_DURATION_PARAM, 0.01f, 10.0f, 0.1f, "Envelope Duration", "s");
+            configParam(SPEED_PARAM, -8.0f, 8.0f, 0.0f, "Speed", "V/oct");
+            configParam(DELAY_PARAM, 0.0f, 10.0f, 0.0f, "Delay", "s");
+            configParam(PAN_PARAM, -1.0f, 1.0f, 0.0f, "Pan");
             
             configInput(CLOCK_INPUT, "Clock");
-            configInput(AUDIO_INPUT, "Audio Input");
-            configOutput(AUDIO_OUTPUT, "Audio Output");
+            configInput(AUDIO_INPUT_L, "Audio Input L");
+            configInput(AUDIO_INPUT_R, "Audio Input R");
+            configOutput(AUDIO_OUTPUT_L, "Audio Output L");
+            configOutput(AUDIO_OUTPUT_R, "Audio Output R");
             
             // Initialize the delay buffer
-            delayBuffer.Init();
+            delayBufferL.Init();
+            delayBufferR.Init();
 
             // Initialize with default random algorithm
             currentAlgorithm = std::make_unique<BaseAlgorithm<float, DELAY_TIME_SAMPLES>>();
@@ -96,8 +104,10 @@ struct GrainsModule : Module
             }
             
             // Get audio input and write to buffer
-            float audioInput = inputs[AUDIO_INPUT].getVoltage();
-            delayBuffer.Write(audioInput);
+            float audioInputL = inputs[AUDIO_INPUT_L].getVoltage();
+            float audioInputR = inputs[AUDIO_INPUT_R].isConnected() ? inputs[AUDIO_INPUT_R].getVoltage() : audioInputL;
+            delayBufferL.Write(audioInputL);
+            delayBufferR.Write(audioInputR);
             
             // Update algorithm parameters
             if (auto* baseAlgo = dynamic_cast<BaseAlgorithm<float, DELAY_TIME_SAMPLES>*>(currentAlgorithm.get())) {
@@ -106,8 +116,9 @@ struct GrainsModule : Module
                 float envDuration = params[ENV_DURATION_PARAM].getValue();
                 float speed = 2.0f * params[SPEED_PARAM].getValue(); // Convert V/oct to speed multiplier
                 float delay = params[DELAY_PARAM].getValue();
+                float pan = params[PAN_PARAM].getValue();
                 
-                baseAlgo->setParameters(density, duration, envDuration, speed, delay);
+                baseAlgo->setParameters(density, duration, envDuration, speed, delay, pan);
             }
             
             // Check for clock trigger to start new grain
@@ -116,13 +127,15 @@ struct GrainsModule : Module
             }
             
             // Process all grains and get output
-            float output = grainManager.process();
+            StereoPacket output = grainManager.process();
             
             // Scale up the output to proper voltage levels
-            output *= 5.0f;  // Scale to ±5V range
+            output.left *= 5.0f;  // Scale to ±5V range
+            output.right *= 5.0f; // Scale to ±5V range
             
             // Output the processed signal
-            outputs[AUDIO_OUTPUT].setVoltage(output);
+            outputs[AUDIO_OUTPUT_L].setVoltage(output.left);
+            outputs[AUDIO_OUTPUT_R].setVoltage(output.right);
         }
 
         void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {
@@ -183,13 +196,16 @@ struct GrainsModuleWidget : ModuleWidget
         addParam(createParamCentered<RoundBlackKnob>(Vec(30, 120), module, GrainsModule::ENV_DURATION_PARAM));
         addParam(createParamCentered<RoundBlackKnob>(Vec(60, 120), module, GrainsModule::SPEED_PARAM));
         addParam(createParamCentered<RoundBlackKnob>(Vec(45, 160), module, GrainsModule::DELAY_PARAM));
+        addParam(createParamCentered<RoundBlackKnob>(Vec(45, 200), module, GrainsModule::PAN_PARAM));
 
         // Inputs
-        addInput(createInputCentered<PJ301MPort>(Vec(30, 200), module, GrainsModule::CLOCK_INPUT));
-        addInput(createInputCentered<PJ301MPort>(Vec(60, 200), module, GrainsModule::AUDIO_INPUT));
+        addInput(createInputCentered<PJ301MPort>(Vec(30, 240), module, GrainsModule::CLOCK_INPUT));
+        addInput(createInputCentered<PJ301MPort>(Vec(60, 240), module, GrainsModule::AUDIO_INPUT_L));
+        addInput(createInputCentered<PJ301MPort>(Vec(90, 240), module, GrainsModule::AUDIO_INPUT_R));
 
         // Output
-        addOutput(createOutputCentered<PJ301MPort>(Vec(45, 240), module, GrainsModule::AUDIO_OUTPUT));
+        addOutput(createOutputCentered<PJ301MPort>(Vec(45, 280), module, GrainsModule::AUDIO_OUTPUT_L));
+        addOutput(createOutputCentered<PJ301MPort>(Vec(75, 280), module, GrainsModule::AUDIO_OUTPUT_R));
     }
 };
 
