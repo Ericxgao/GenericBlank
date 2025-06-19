@@ -14,7 +14,7 @@ struct StereoPacket {
 // e.g. 48000 samples is 1 second at 48kHz.
 // This determines the memory usage of each grain object.
 #ifndef MAX_GRAIN_SAMPLES
-#define MAX_GRAIN_SAMPLES 48000
+#define MAX_GRAIN_SAMPLES 48000 * 10
 #endif
 
 template<typename T>

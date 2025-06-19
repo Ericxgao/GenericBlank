@@ -21,6 +21,7 @@ struct GrainsModule : Module
         PAN_PARAM,
         TIME_DIVISION_PARAM,
         MAX_GRAINS_PARAM,
+        THRESHOLD_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
@@ -35,6 +36,7 @@ struct GrainsModule : Module
         NUM_OUTPUTS
     };
     enum Lights {
+        TRANSIENT_LIGHT,
         NUM_LIGHTS
     };
 
@@ -58,6 +60,13 @@ struct GrainsModule : Module
     float lastGrainTime = 0.0f;
     float currentTime = 0.0f;
 
+    // Transient detection variables
+    float lastAudioLevel = 0.0f;
+    float transientThreshold = 0.5f;
+    bool transientDetected = false;
+    int transientHoldTime = 0;
+    static constexpr int TRANSIENT_HOLD_SAMPLES = 4800; // 100ms at 48kHz
+
     // Add these as member variables to your Grains class
     private:
         std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> currentAlgorithm;
@@ -80,6 +89,7 @@ struct GrainsModule : Module
             configParam(PAN_PARAM, -1.0f, 1.0f, 0.0f, "Pan");
             configParam(TIME_DIVISION_PARAM, 0.0f, 23.0f, 2.0f, "Time Division", "", 0.0f, 1.0f);
             configParam(MAX_GRAINS_PARAM, 1, 64, 32, "Max Grains");
+            configParam(THRESHOLD_PARAM, 0.0f, 1.0f, 0.5f, "Threshold");
             
             configInput(CLOCK_INPUT, "Clock");
             configInput(AUDIO_INPUT_L, "Audio Input L");
@@ -125,6 +135,27 @@ struct GrainsModule : Module
             float audioInputR = inputs[AUDIO_INPUT_R].isConnected() ? inputs[AUDIO_INPUT_R].getVoltage() : audioInputL;
             delayBufferL.Write(audioInputL);
             delayBufferR.Write(audioInputR);
+            
+            // Transient detection
+            float currentAudioLevel = std::abs(audioInputL) + std::abs(audioInputR);
+            float audioChange = std::abs(currentAudioLevel - lastAudioLevel);
+            float threshold = params[THRESHOLD_PARAM].getValue();
+            
+            // Detect transient based on rate of change
+            if (audioChange > threshold && !transientDetected) {
+                transientDetected = true;
+                transientHoldTime = 0;
+            }
+            
+            // Hold the transient detection for a short time
+            if (transientDetected) {
+                transientHoldTime++;
+                if (transientHoldTime >= TRANSIENT_HOLD_SAMPLES) {
+                    transientDetected = false;
+                }
+            }
+            
+            lastAudioLevel = currentAudioLevel;
             
             // Update algorithm parameters
             if (auto* baseAlgo = dynamic_cast<BaseAlgorithm<float, DELAY_TIME_SAMPLES>*>(currentAlgorithm.get())) {
@@ -216,6 +247,9 @@ struct GrainsModule : Module
             // Output the processed signal
             outputs[AUDIO_OUTPUT_L].setVoltage(output.left);
             outputs[AUDIO_OUTPUT_R].setVoltage(output.right);
+            
+            // Update transient light
+            lights[TRANSIENT_LIGHT].setBrightness(transientDetected ? 1.0f : 0.0f);
         }
 
         void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {
@@ -370,16 +404,17 @@ struct GrainsModuleWidget : ModuleWidget
             {GrainsModule::DELAY_PARAM, Vec(120, 140), "Delay"},
             {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"},
             {GrainsModule::TIME_DIVISION_PARAM, Vec(120, 200), "Time Div"},
-            {GrainsModule::MAX_GRAINS_PARAM, Vec(180, 200), "Max Grains"}
+            {GrainsModule::MAX_GRAINS_PARAM, Vec(180, 200), "Max Grains"},
+            {GrainsModule::THRESHOLD_PARAM, Vec(120, 260), "Threshold"}
         };
 
         // Define all inputs/outputs with their positions and labels - spaced 60px apart
         std::vector<IODef> ios = {
-            {GrainsModule::CLOCK_INPUT, Vec(60, 260), "Clock", true},
-            {GrainsModule::AUDIO_INPUT_L, Vec(120, 260), "Audio L", true},
-            {GrainsModule::AUDIO_INPUT_R, Vec(180, 260), "Audio R", true},
-            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 320), "Out L", false},
-            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 320), "Out R", false}
+            {GrainsModule::CLOCK_INPUT, Vec(60, 320), "Clock", true},
+            {GrainsModule::AUDIO_INPUT_L, Vec(120, 320), "Audio L", true},
+            {GrainsModule::AUDIO_INPUT_R, Vec(180, 320), "Audio R", true},
+            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 380), "Out L", false},
+            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 380), "Out R", false}
         };
 
         // Create parameters and their labels
@@ -395,6 +430,9 @@ struct GrainsModuleWidget : ModuleWidget
             label->box.size = Vec(40, 20);
             addChild(label);
         }
+
+        // Add transient light
+        addChild(createLightCentered<MediumLight<GreenLight>>(Vec(150, 260), module, GrainsModule::TRANSIENT_LIGHT));
 
         // Create inputs/outputs and their labels
         for (const auto& io : ios) {
