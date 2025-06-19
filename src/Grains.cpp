@@ -20,6 +20,7 @@ struct GrainsModule : Module
         DELAY_PARAM,
         PAN_PARAM,
         TIME_DIVISION_PARAM,
+        MAX_GRAINS_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
@@ -78,6 +79,7 @@ struct GrainsModule : Module
             configParam(DELAY_PARAM, 0.0f, 10.0f, 0.0f, "Delay", "s");
             configParam(PAN_PARAM, -1.0f, 1.0f, 0.0f, "Pan");
             configParam(TIME_DIVISION_PARAM, 0.0f, 23.0f, 2.0f, "Time Division", "", 0.0f, 1.0f);
+            configParam(MAX_GRAINS_PARAM, 1, 64, 32, "Max Grains");
             
             configInput(CLOCK_INPUT, "Clock");
             configInput(AUDIO_INPUT_L, "Audio Input L");
@@ -135,6 +137,10 @@ struct GrainsModule : Module
                 
                 baseAlgo->setParameters(density, duration, envDuration, speed, delay, pan);
             }
+            
+            // Update max grains parameter
+            int maxGrains = (int)params[MAX_GRAINS_PARAM].getValue();
+            grainManager.setMaxActiveGrains(maxGrains);
             
             // Check for clock trigger to track BPM
             if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
@@ -363,7 +369,8 @@ struct GrainsModuleWidget : ModuleWidget
             {GrainsModule::SPEED_PARAM, Vec(60, 140), "Speed"},
             {GrainsModule::DELAY_PARAM, Vec(120, 140), "Delay"},
             {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"},
-            {GrainsModule::TIME_DIVISION_PARAM, Vec(120, 200), "Time Div"}
+            {GrainsModule::TIME_DIVISION_PARAM, Vec(120, 200), "Time Div"},
+            {GrainsModule::MAX_GRAINS_PARAM, Vec(180, 200), "Max Grains"}
         };
 
         // Define all inputs/outputs with their positions and labels - spaced 60px apart
@@ -377,7 +384,7 @@ struct GrainsModuleWidget : ModuleWidget
 
         // Create parameters and their labels
         for (const auto& param : params) {
-            if (param.paramId == GrainsModule::TIME_DIVISION_PARAM) {
+            if (param.paramId == GrainsModule::TIME_DIVISION_PARAM || param.paramId == GrainsModule::MAX_GRAINS_PARAM) {
                 addParam(createParamCentered<RoundBlackSnapKnob>(param.position, module, param.paramId));
             } else {
                 addParam(createParamCentered<RoundBlackKnob>(param.position, module, param.paramId));
