@@ -175,37 +175,103 @@ struct GrainsModuleWidget : ModuleWidget
         }
     };
 
+    struct TextWidget : Widget {
+        std::string text;
+        NVGcolor color = nvgRGB(0, 0, 0);
+        
+        TextWidget(std::string text) : text(text) {}
+        
+        void draw(const DrawArgs& args) override {
+            // Draw the text
+            nvgFontSize(args.vg, 12);
+            nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+            nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(args.vg, color);
+            nvgText(args.vg, box.size.x / 2, box.size.y / 2, text.c_str(), NULL);
+        }
+    };
+
+    // Parameter definition structure
+    struct ParamDef {
+        int paramId;
+        Vec position;
+        std::string label;
+        
+        // Fixed label positioning that we know works
+        Vec getLabelOffset() const { return Vec(-20, 25); }  // Fixed offset
+        Vec getLabelSize() const { return Vec(40, 20); }     // Fixed size
+    };
+
+    // Input/Output definition structure
+    struct IODef {
+        int ioId;
+        Vec position;
+        std::string label;
+        bool isInput;
+        
+        // Fixed label positioning that we know works
+        Vec getLabelOffset() const { return Vec(-20, 25); }  // Fixed offset
+        Vec getLabelSize() const { return Vec(40, 20); }     // Fixed size
+    };
+
     GrainsModuleWidget(GrainsModule *module)
     {
         setModule(module);
-        box.size = Vec(6 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT);
+        box.size = Vec(16 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT);  // Increased to 12 HP
         
         // Create a custom white panel
         CustomPanel* panel = new CustomPanel();
         panel->box.size = box.size;
         addChild(panel);
 
+        // Add screws first
         addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, 0)));
         addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, 0)));
         addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
         addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-        // Add knobs
-        addParam(createParamCentered<RoundBlackKnob>(Vec(30, 80), module, GrainsModule::DENSITY_PARAM));
-        addParam(createParamCentered<RoundBlackKnob>(Vec(60, 80), module, GrainsModule::DURATION_PARAM));
-        addParam(createParamCentered<RoundBlackKnob>(Vec(30, 120), module, GrainsModule::ENV_DURATION_PARAM));
-        addParam(createParamCentered<RoundBlackKnob>(Vec(60, 120), module, GrainsModule::SPEED_PARAM));
-        addParam(createParamCentered<RoundBlackKnob>(Vec(45, 160), module, GrainsModule::DELAY_PARAM));
-        addParam(createParamCentered<RoundBlackKnob>(Vec(45, 200), module, GrainsModule::PAN_PARAM));
+        // Define all parameters with their positions and labels - spaced 60px apart
+        std::vector<ParamDef> params = {
+            {GrainsModule::DENSITY_PARAM, Vec(60, 80), "Density"},
+            {GrainsModule::DURATION_PARAM, Vec(120, 80), "Duration"},
+            {GrainsModule::ENV_DURATION_PARAM, Vec(180, 80), "Env Dur"},
+            {GrainsModule::SPEED_PARAM, Vec(60, 140), "Speed"},
+            {GrainsModule::DELAY_PARAM, Vec(120, 140), "Delay"},
+            {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"}
+        };
 
-        // Inputs
-        addInput(createInputCentered<PJ301MPort>(Vec(30, 240), module, GrainsModule::CLOCK_INPUT));
-        addInput(createInputCentered<PJ301MPort>(Vec(60, 240), module, GrainsModule::AUDIO_INPUT_L));
-        addInput(createInputCentered<PJ301MPort>(Vec(90, 240), module, GrainsModule::AUDIO_INPUT_R));
+        // Define all inputs/outputs with their positions and labels - spaced 60px apart
+        std::vector<IODef> ios = {
+            {GrainsModule::CLOCK_INPUT, Vec(60, 200), "Clock", true},
+            {GrainsModule::AUDIO_INPUT_L, Vec(120, 200), "Audio L", true},
+            {GrainsModule::AUDIO_INPUT_R, Vec(180, 200), "Audio R", true},
+            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 260), "Out L", false},
+            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 260), "Out R", false}
+        };
 
-        // Output
-        addOutput(createOutputCentered<PJ301MPort>(Vec(45, 280), module, GrainsModule::AUDIO_OUTPUT_L));
-        addOutput(createOutputCentered<PJ301MPort>(Vec(75, 280), module, GrainsModule::AUDIO_OUTPUT_R));
+        // Create parameters and their labels
+        for (const auto& param : params) {
+            addParam(createParamCentered<RoundBlackKnob>(param.position, module, param.paramId));
+            
+            TextWidget* label = new TextWidget(param.label);
+            label->box.pos = Vec(param.position.x - 20, param.position.y + 25);
+            label->box.size = Vec(40, 20);
+            addChild(label);
+        }
+
+        // Create inputs/outputs and their labels
+        for (const auto& io : ios) {
+            if (io.isInput) {
+                addInput(createInputCentered<PJ301MPort>(io.position, module, io.ioId));
+            } else {
+                addOutput(createOutputCentered<PJ301MPort>(io.position, module, io.ioId));
+            }
+            
+            TextWidget* label = new TextWidget(io.label);
+            label->box.pos = Vec(io.position.x - 20, io.position.y + 25);
+            label->box.size = Vec(40, 20);
+            addChild(label);
+        }
     }
 };
 
