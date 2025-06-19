@@ -19,6 +19,7 @@ struct GrainsModule : Module
         SPEED_PARAM,
         DELAY_PARAM,
         PAN_PARAM,
+        TIME_DIVISION_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
@@ -45,6 +46,16 @@ struct GrainsModule : Module
 
     // Add Schmitt trigger for clock input
     dsp::SchmittTrigger clockTrigger;
+    
+    // Simple BPM tracking
+    float lastTriggerTime = 0.0f;
+    float intervals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int intervalIndex = 0;
+    float currentBPM = 0.0f;
+    
+    // Time division tracking
+    float lastGrainTime = 0.0f;
+    float currentTime = 0.0f;
 
     // Add these as member variables to your Grains class
     private:
@@ -66,6 +77,7 @@ struct GrainsModule : Module
             configParam(SPEED_PARAM, -8.0f, 8.0f, 0.0f, "Speed", "V/oct");
             configParam(DELAY_PARAM, 0.0f, 10.0f, 0.0f, "Delay", "s");
             configParam(PAN_PARAM, -1.0f, 1.0f, 0.0f, "Pan");
+            configParam(TIME_DIVISION_PARAM, 0.0f, 23.0f, 2.0f, "Time Division", "", 0.0f, 1.0f);
             
             configInput(CLOCK_INPUT, "Clock");
             configInput(AUDIO_INPUT_L, "Audio Input L");
@@ -103,6 +115,9 @@ struct GrainsModule : Module
                 reverb.setSampleRate(sampleRate);
             }
             
+            // Update current time
+            currentTime = args.frame;
+            
             // Get audio input and write to buffer
             float audioInputL = inputs[AUDIO_INPUT_L].getVoltage();
             float audioInputR = inputs[AUDIO_INPUT_R].isConnected() ? inputs[AUDIO_INPUT_R].getVoltage() : audioInputL;
@@ -121,9 +136,68 @@ struct GrainsModule : Module
                 baseAlgo->setParameters(density, duration, envDuration, speed, delay, pan);
             }
             
-            // Check for clock trigger to start new grain
+            // Check for clock trigger to track BPM
             if (clockTrigger.process(inputs[CLOCK_INPUT].getVoltage())) {
-                generateGrain();
+                // Simple BPM tracking
+                if (lastTriggerTime > 0.0f) {
+                    float interval = (currentTime - lastTriggerTime) / sampleRate;
+                    intervals[intervalIndex] = interval;
+                    intervalIndex = (intervalIndex + 1) % 4;
+                    
+                    // Calculate average BPM from last 4 intervals
+                    float avgInterval = (intervals[0] + intervals[1] + intervals[2] + intervals[3]) / 4.0f;
+                    currentBPM = 60.0f / avgInterval;
+                }
+                lastTriggerTime = currentTime;
+            }
+            
+            // Check if we should trigger a grain based on time division
+            if (currentBPM > 0.0f) {
+                float timeDivision = params[TIME_DIVISION_PARAM].getValue();
+                // Snap to nearest integer for discrete divisions
+                int divisionIndex = (int)(timeDivision + 0.5f);
+                divisionIndex = clamp(divisionIndex, 0, 23);
+                
+                // Time divisions sorted by actual time value (fastest to slowest)
+                // Interweaving regular, dotted, and triplet divisions
+                float divisions[] = {
+                    1.0f/32.0f,    // 0: 1/32 (fastest)
+                    2.0f/96.0f,    // 1: 1/32T (triplet)
+                    1.5f/32.0f,    // 2: 1/32. (dotted)
+                    1.0f/16.0f,    // 3: 1/16
+                    2.0f/48.0f,    // 4: 1/16T
+                    1.5f/16.0f,    // 5: 1/16.
+                    1.0f/8.0f,     // 6: 1/8
+                    2.0f/24.0f,    // 7: 1/8T
+                    1.5f/8.0f,     // 8: 1/8.
+                    1.0f/4.0f,     // 9: 1/4
+                    2.0f/12.0f,    // 10: 1/4T
+                    1.5f/4.0f,     // 11: 1/4.
+                    1.0f/2.0f,     // 12: 1/2
+                    2.0f/6.0f,     // 13: 1/2T
+                    1.5f/2.0f,     // 14: 1/2.
+                    1.0f,          // 15: 1 (whole)
+                    2.0f/3.0f,     // 16: 1T
+                    1.5f,          // 17: 1.
+                    2.0f,          // 18: 2
+                    4.0f/3.0f,     // 19: 2T
+                    3.0f,          // 20: 2.
+                    4.0f,          // 21: 4
+                    8.0f/3.0f,     // 22: 4T
+                    6.0f           // 23: 4. (slowest)
+                };
+                float selectedDivision = divisions[divisionIndex];
+                
+                // Calculate time between grains based on BPM and division
+                float beatTime = 60.0f / currentBPM;  // seconds per beat
+                float grainInterval = beatTime * selectedDivision;  // seconds between grains
+                float grainIntervalSamples = grainInterval * sampleRate;
+                
+                // Check if enough time has passed since last grain
+                if (currentTime - lastGrainTime >= grainIntervalSamples) {
+                    generateGrain();
+                    lastGrainTime = currentTime;
+                }
             }
             
             // Process all grains and get output
@@ -161,6 +235,25 @@ struct GrainsModule : Module
         void setCloudAlgorithm() {
             currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
         }
+        
+        // Simple BPM getter
+        float getBPM() const {
+            return currentBPM;
+        }
+        
+        // Get current time division as string
+        std::string getTimeDivisionString() {
+            float timeDivision = params[TIME_DIVISION_PARAM].getValue();
+            // Snap to nearest integer for discrete divisions
+            int divisionIndex = (int)(timeDivision + 0.5f);
+            divisionIndex = clamp(divisionIndex, 0, 23);
+            const char* divisions[] = {
+                "1/32", "1/32T", "1/32.", "1/16", "1/16T", "1/16.", "1/8", "1/8T", "1/8.", 
+                "1/4", "1/4T", "1/4.", "1/2", "1/2T", "1/2.", "1", "1T", "1.", 
+                "2", "2T", "2.", "4", "4T", "4."
+            };
+            return divisions[divisionIndex];
+        }
 };
 
 struct GrainsModuleWidget : ModuleWidget
@@ -188,6 +281,32 @@ struct GrainsModuleWidget : ModuleWidget
             nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
             nvgFillColor(args.vg, color);
             nvgText(args.vg, box.size.x / 2, box.size.y / 2, text.c_str(), NULL);
+        }
+    };
+    
+    // Simple BPM Display
+    struct BPMDisplayWidget : Widget {
+        GrainsModule* module;
+        
+        BPMDisplayWidget(GrainsModule* module) : module(module) {}
+        
+        void draw(const DrawArgs& args) override {
+            std::string displayText = "--- BPM";
+            if (module) {
+                float bpm = module->getBPM();
+                if (bpm > 0.0f) {
+                    char bpmStr[64];
+                    std::string timeDiv = module->getTimeDivisionString();
+                    snprintf(bpmStr, sizeof(bpmStr), "%.0f BPM %s", bpm, timeDiv.c_str());
+                    displayText = std::string(bpmStr);
+                }
+            }
+            
+            nvgFontSize(args.vg, 14);
+            nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+            nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(args.vg, nvgRGB(0, 0, 0));
+            nvgText(args.vg, box.size.x / 2, box.size.y / 2, displayText.c_str(), NULL);
         }
     };
 
@@ -230,6 +349,12 @@ struct GrainsModuleWidget : ModuleWidget
         addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
         addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
+        // Add simple BPM display
+        BPMDisplayWidget* bpmDisplay = new BPMDisplayWidget(module);
+        bpmDisplay->box.pos = Vec(60, 30);
+        bpmDisplay->box.size = Vec(120, 30);
+        addChild(bpmDisplay);
+
         // Define all parameters with their positions and labels - spaced 60px apart
         std::vector<ParamDef> params = {
             {GrainsModule::DENSITY_PARAM, Vec(60, 80), "Density"},
@@ -237,21 +362,26 @@ struct GrainsModuleWidget : ModuleWidget
             {GrainsModule::ENV_DURATION_PARAM, Vec(180, 80), "Env Dur"},
             {GrainsModule::SPEED_PARAM, Vec(60, 140), "Speed"},
             {GrainsModule::DELAY_PARAM, Vec(120, 140), "Delay"},
-            {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"}
+            {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"},
+            {GrainsModule::TIME_DIVISION_PARAM, Vec(120, 200), "Time Div"}
         };
 
         // Define all inputs/outputs with their positions and labels - spaced 60px apart
         std::vector<IODef> ios = {
-            {GrainsModule::CLOCK_INPUT, Vec(60, 200), "Clock", true},
-            {GrainsModule::AUDIO_INPUT_L, Vec(120, 200), "Audio L", true},
-            {GrainsModule::AUDIO_INPUT_R, Vec(180, 200), "Audio R", true},
-            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 260), "Out L", false},
-            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 260), "Out R", false}
+            {GrainsModule::CLOCK_INPUT, Vec(60, 260), "Clock", true},
+            {GrainsModule::AUDIO_INPUT_L, Vec(120, 260), "Audio L", true},
+            {GrainsModule::AUDIO_INPUT_R, Vec(180, 260), "Audio R", true},
+            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 320), "Out L", false},
+            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 320), "Out R", false}
         };
 
         // Create parameters and their labels
         for (const auto& param : params) {
-            addParam(createParamCentered<RoundBlackKnob>(param.position, module, param.paramId));
+            if (param.paramId == GrainsModule::TIME_DIVISION_PARAM) {
+                addParam(createParamCentered<RoundBlackSnapKnob>(param.position, module, param.paramId));
+            } else {
+                addParam(createParamCentered<RoundBlackKnob>(param.position, module, param.paramId));
+            }
             
             TextWidget* label = new TextWidget(param.label);
             label->box.pos = Vec(param.position.x - 20, param.position.y + 25);
