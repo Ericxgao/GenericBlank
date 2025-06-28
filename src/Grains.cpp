@@ -22,6 +22,7 @@ struct GrainsModule : Module
         TIME_DIVISION_PARAM,
         MAX_GRAINS_PARAM,
         THRESHOLD_PARAM,
+        JITTER_PARAM,
         NUM_PARAMS
     };
     enum Inputs {
@@ -37,6 +38,7 @@ struct GrainsModule : Module
     };
     enum Lights {
         TRANSIENT_LIGHT,
+        JITTER_LIGHT,
         NUM_LIGHTS
     };
 
@@ -90,6 +92,7 @@ struct GrainsModule : Module
             configParam(TIME_DIVISION_PARAM, 0.0f, 23.0f, 2.0f, "Time Division", "", 0.0f, 1.0f);
             configParam(MAX_GRAINS_PARAM, 1, 64, 32, "Max Grains");
             configParam(THRESHOLD_PARAM, 0.0f, 1.0f, 0.5f, "Threshold");
+            configParam(JITTER_PARAM, 0.0f, 1.0f, 0.0f, "Jitter");
             
             configInput(CLOCK_INPUT, "Clock");
             configInput(AUDIO_INPUT_L, "Audio Input L");
@@ -250,6 +253,10 @@ struct GrainsModule : Module
             
             // Update transient light
             lights[TRANSIENT_LIGHT].setBrightness(transientDetected ? 1.0f : 0.0f);
+            
+            // Update jitter light based on jitter parameter value
+            float jitterValue = params[JITTER_PARAM].getValue();
+            lights[JITTER_LIGHT].setBrightness(jitterValue);
         }
 
         void setAlgorithm(std::unique_ptr<GrainAlgorithm<float, DELAY_TIME_SAMPLES>> newAlgorithm) {
@@ -259,22 +266,11 @@ struct GrainsModule : Module
         // Replace your existing grain generation code with:
         void generateGrain() {
             if (currentAlgorithm) {
-                currentAlgorithm->generateGrains(grainManager, bufferSize);
+                float jitter = params[JITTER_PARAM].getValue();
+                currentAlgorithm->generateGrains(grainManager, bufferSize, jitter);
             }
         }
 
-        // Example methods to switch algorithms
-        void setRandomAlgorithm() {
-            currentAlgorithm = std::make_unique<RandomGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
-        }
-
-        void setSequentialAlgorithm() {
-            currentAlgorithm = std::make_unique<SequentialGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
-        }
-
-        void setCloudAlgorithm() {
-            currentAlgorithm = std::make_unique<CloudGrainAlgorithm<float, DELAY_TIME_SAMPLES>>();
-        }
         
         // Simple BPM getter
         float getBPM() const {
@@ -350,6 +346,30 @@ struct GrainsModuleWidget : ModuleWidget
         }
     };
 
+    // Grain Count Display
+    struct GrainCountDisplayWidget : Widget {
+        GrainsModule* module;
+        
+        GrainCountDisplayWidget(GrainsModule* module) : module(module) {}
+        
+        void draw(const DrawArgs& args) override {
+            std::string displayText = "0 grains";
+            if (module) {
+                size_t activeGrains = module->grainManager.getActiveGrainCount();
+                size_t maxGrains = module->grainManager.getMaxActiveGrains();
+                char grainStr[64];
+                snprintf(grainStr, sizeof(grainStr), "%zu/%zu grains", activeGrains, maxGrains);
+                displayText = std::string(grainStr);
+            }
+            
+            nvgFontSize(args.vg, 12);
+            nvgFontFaceId(args.vg, APP->window->uiFont->handle);
+            nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+            nvgFillColor(args.vg, nvgRGB(100, 100, 100));
+            nvgText(args.vg, box.size.x / 2, box.size.y / 2, displayText.c_str(), NULL);
+        }
+    };
+
     // Parameter definition structure
     struct ParamDef {
         int paramId;
@@ -357,7 +377,7 @@ struct GrainsModuleWidget : ModuleWidget
         std::string label;
         
         // Fixed label positioning that we know works
-        Vec getLabelOffset() const { return Vec(-20, 25); }  // Fixed offset
+        Vec getLabelOffset() const { return Vec(-20, 35); }  // Fixed offset
         Vec getLabelSize() const { return Vec(40, 20); }     // Fixed size
     };
 
@@ -369,7 +389,7 @@ struct GrainsModuleWidget : ModuleWidget
         bool isInput;
         
         // Fixed label positioning that we know works
-        Vec getLabelOffset() const { return Vec(-20, 25); }  // Fixed offset
+        Vec getLabelOffset() const { return Vec(-20, 35); }  // Fixed offset
         Vec getLabelSize() const { return Vec(40, 20); }     // Fixed size
     };
 
@@ -395,26 +415,33 @@ struct GrainsModuleWidget : ModuleWidget
         bpmDisplay->box.size = Vec(120, 30);
         addChild(bpmDisplay);
 
-        // Define all parameters with their positions and labels - spaced 60px apart
+        // Add grain count display
+        GrainCountDisplayWidget* grainDisplay = new GrainCountDisplayWidget(module);
+        grainDisplay->box.pos = Vec(60, 50);
+        grainDisplay->box.size = Vec(120, 15);
+        addChild(grainDisplay);
+
+        // Define all parameters with their positions and labels - reduced vertical spacing
         std::vector<ParamDef> params = {
             {GrainsModule::DENSITY_PARAM, Vec(60, 80), "Density"},
             {GrainsModule::DURATION_PARAM, Vec(120, 80), "Duration"},
             {GrainsModule::ENV_DURATION_PARAM, Vec(180, 80), "Env Dur"},
-            {GrainsModule::SPEED_PARAM, Vec(60, 140), "Speed"},
-            {GrainsModule::DELAY_PARAM, Vec(120, 140), "Delay"},
-            {GrainsModule::PAN_PARAM, Vec(180, 140), "Pan"},
-            {GrainsModule::TIME_DIVISION_PARAM, Vec(120, 200), "Time Div"},
-            {GrainsModule::MAX_GRAINS_PARAM, Vec(180, 200), "Max Grains"},
-            {GrainsModule::THRESHOLD_PARAM, Vec(120, 260), "Threshold"}
+            {GrainsModule::SPEED_PARAM, Vec(60, 125), "Speed"},
+            {GrainsModule::DELAY_PARAM, Vec(120, 125), "Delay"},
+            {GrainsModule::PAN_PARAM, Vec(180, 125), "Pan"},
+            {GrainsModule::TIME_DIVISION_PARAM, Vec(60, 170), "Time Div"},
+            {GrainsModule::MAX_GRAINS_PARAM, Vec(120, 170), "Max Grains"},
+            {GrainsModule::JITTER_PARAM, Vec(180, 170), "Jitter"},
+            {GrainsModule::THRESHOLD_PARAM, Vec(120, 215), "Threshold"}
         };
 
-        // Define all inputs/outputs with their positions and labels - spaced 60px apart
+        // Define all inputs/outputs with their positions and labels - reduced vertical spacing
         std::vector<IODef> ios = {
-            {GrainsModule::CLOCK_INPUT, Vec(60, 320), "Clock", true},
-            {GrainsModule::AUDIO_INPUT_L, Vec(120, 320), "Audio L", true},
-            {GrainsModule::AUDIO_INPUT_R, Vec(180, 320), "Audio R", true},
-            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 380), "Out L", false},
-            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 380), "Out R", false}
+            {GrainsModule::CLOCK_INPUT, Vec(60, 270), "Clock", true},
+            {GrainsModule::AUDIO_INPUT_L, Vec(120, 270), "Audio L", true},
+            {GrainsModule::AUDIO_INPUT_R, Vec(180, 270), "Audio R", true},
+            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 315), "Out L", false},
+            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 315), "Out R", false}
         };
 
         // Create parameters and their labels
@@ -426,13 +453,16 @@ struct GrainsModuleWidget : ModuleWidget
             }
             
             TextWidget* label = new TextWidget(param.label);
-            label->box.pos = Vec(param.position.x - 20, param.position.y + 25);
+            label->box.pos = Vec(param.position.x - 20, param.position.y + 10);
             label->box.size = Vec(40, 20);
             addChild(label);
         }
 
         // Add transient light
-        addChild(createLightCentered<MediumLight<GreenLight>>(Vec(150, 260), module, GrainsModule::TRANSIENT_LIGHT));
+        addChild(createLightCentered<MediumLight<GreenLight>>(Vec(150, 215), module, GrainsModule::TRANSIENT_LIGHT));
+        
+        // Add jitter light next to jitter knob
+        addChild(createLightCentered<MediumLight<BlueLight>>(Vec(195, 155), module, GrainsModule::JITTER_LIGHT));
 
         // Create inputs/outputs and their labels
         for (const auto& io : ios) {
@@ -443,7 +473,7 @@ struct GrainsModuleWidget : ModuleWidget
             }
             
             TextWidget* label = new TextWidget(io.label);
-            label->box.pos = Vec(io.position.x - 20, io.position.y + 25);
+            label->box.pos = Vec(io.position.x - 20, io.position.y + 20);
             label->box.size = Vec(40, 20);
             addChild(label);
         }

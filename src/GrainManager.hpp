@@ -82,8 +82,11 @@ public:
         }
 
         if (activeCount > 0) {
-            output.left /= activeCount;
-            output.right /= activeCount;
+            // Use square root scaling for more perceptually correct volume
+            // This prevents dramatic volume drops with many grains
+            float scaleFactor = 1.0f / std::sqrt(static_cast<float>(activeCount));
+            output.left *= scaleFactor;
+            output.right *= scaleFactor;
         }
         
         return output;

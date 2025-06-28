@@ -7,7 +7,7 @@ template<typename T, size_t BufferSize>
 class GrainAlgorithm {
 public:
     virtual ~GrainAlgorithm() = default;
-    virtual void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) = 0;
+    virtual void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize, float jitter = 0.0f) = 0;
 };
 
 // Base class for common grain parameters
@@ -40,95 +40,21 @@ public:
         pan = p;
     }
 
-    virtual void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
+    virtual void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize, float jitter = 0.0f) override {
         if (random::uniform() < density) {
-            manager.addGrain(delay, speed, 1.0f, duration, envelopeDuration, true, pan);
-        }
-    }
-};
-
-// Random grain generation algorithm
-template<typename T, size_t BufferSize>
-class RandomGrainAlgorithm : public BaseAlgorithm<T, BufferSize> {
-private:
-    float minStartPos;
-    float maxStartPos;
-    float minVolume;
-    float maxVolume;
-
-public:
-    RandomGrainAlgorithm(
-        float minStart = 0.0f, float maxStart = 12000.0f,
-        float minVol = 0.5f, float maxVol = 1.0f,
-        float dens = 1.0f, float dur = 0.1f,
-        float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f, float p = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
-        minStartPos(minStart), maxStartPos(maxStart),
-        minVolume(minVol), maxVolume(maxVol) {}
-
-    void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
-        if (random::uniform() < this->density) {
-            float startPos = this->delay * 48000.0f + random::uniform() * (maxStartPos - minStartPos) + minStartPos;
-            float volume = random::uniform() * (maxVolume - minVolume) + minVolume;
-            manager.addGrain(startPos, this->speed, volume, this->duration, this->envelopeDuration, true, this->pan);
-        }
-    }
-};
-
-// Sequential grain generation algorithm
-template<typename T, size_t BufferSize>
-class SequentialGrainAlgorithm : public BaseAlgorithm<T, BufferSize> {
-private:
-    float stepSize;
-    float currentPos;
-
-public:
-    SequentialGrainAlgorithm(
-        float step = 100.0f,
-        float dens = 1.0f, float dur = 0.1f,
-        float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f, float p = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
-        stepSize(step), currentPos(0.0f) {}
-
-    void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
-        if (random::uniform() < this->density) {
-            float startPos = this->delay * 48000.0f + currentPos;
-            manager.addGrain(startPos, this->speed, 1.0f, this->duration, this->envelopeDuration, true, this->pan);
-            currentPos += stepSize;
-            if (currentPos >= bufferSize) {
-                currentPos = 0.0f;
+            // Apply jitter to delay timing
+            float jitteredDelay = delay;
+            if (jitter > 0.0f) {
+                // Add random offset to delay timing: ±jitter * 0.1 seconds max
+                float jitterOffset = (random::uniform() * 2.0f - 1.0f) * jitter * 0.1f;
+                jitteredDelay = delay + jitterOffset;
             }
-        }
-    }
-};
-
-// Granular cloud algorithm
-template<typename T, size_t BufferSize>
-class CloudGrainAlgorithm : public BaseAlgorithm<T, BufferSize> {
-private:
-    float centerPos;
-    float spread;
-
-public:
-    CloudGrainAlgorithm(
-        float center = 48000.0f * 1.0f,
-        float posSpread = 12000.0f,
-        float dens = 1.0f, float dur = 0.1f,
-        float envDur = 0.1f, float spd = 1.0f,
-        float dly = 0.0f, float p = 0.0f
-    ) : BaseAlgorithm<T, BufferSize>(dens, dur, envDur, spd, dly, p),
-        centerPos(center), spread(posSpread) {}
-
-    void generateGrains(GrainManager<T, BufferSize>& manager, float bufferSize) override {
-        if (random::uniform() < this->density) {
-            float startPos = this->delay * 48000.0f + centerPos + (random::uniform() * 2.0f - 1.0f) * spread;
-            startPos = std::max(0.0f, std::min(startPos, bufferSize));
-            float speedOptions[] = {0.5f, 2.0f, 1.0f};
-            int speedIndex = static_cast<int>(random::uniform() * 3);
-            float finalSpeed = this->speed * speedOptions[speedIndex];
-            manager.addGrain(startPos, finalSpeed, 1.0f, this->duration, this->envelopeDuration, true, this->pan);
+            
+            // Convert delay from seconds to samples for addGrain
+            float delaySamples = jitteredDelay * 48000.0f;
+            
+            // Generate single grain with jittered timing
+            manager.addGrain(delaySamples, speed, 1.0f, duration, envelopeDuration, true, pan);
         }
     }
 };
