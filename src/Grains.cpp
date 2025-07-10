@@ -4,6 +4,7 @@
 #include "GrainManager.hpp"
 #include "GrainAlgorithm.hpp"
 #include "Dattorro.hpp"
+#include "DisplayWidget.hpp"
 #include <memory>  // Add this for std::make_unique
 
 // Constants
@@ -320,7 +321,7 @@ struct GrainsModuleWidget : ModuleWidget
         }
     };
     
-    // Simple BPM Display
+    // Legacy BPM Display (kept for reference)
     struct BPMDisplayWidget : Widget {
         GrainsModule* module;
         
@@ -346,7 +347,7 @@ struct GrainsModuleWidget : ModuleWidget
         }
     };
 
-    // Grain Count Display
+    // Legacy Grain Count Display (kept for reference)
     struct GrainCountDisplayWidget : Widget {
         GrainsModule* module;
         
@@ -409,39 +410,55 @@ struct GrainsModuleWidget : ModuleWidget
         addChild(createWidget<ThemedScrew>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
         addChild(createWidget<ThemedScrew>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-        // Add simple BPM display
-        BPMDisplayWidget* bpmDisplay = new BPMDisplayWidget(module);
+        // Add unified BPM display
+        UnifiedBPMDisplay* bpmDisplay = new UnifiedBPMDisplay(
+            [module]() -> float { return module ? module->getBPM() : 0.0f; },
+            [module]() -> std::string { return module ? module->getTimeDivisionString() : "---"; }
+        );
         bpmDisplay->box.pos = Vec(60, 30);
         bpmDisplay->box.size = Vec(120, 30);
         addChild(bpmDisplay);
 
-        // Add grain count display
-        GrainCountDisplayWidget* grainDisplay = new GrainCountDisplayWidget(module);
+        // Add unified grain count display
+        UnifiedGrainCountDisplay* grainDisplay = new UnifiedGrainCountDisplay(
+            [module]() -> size_t { return module ? module->grainManager.getActiveGrainCount() : 0; },
+            [module]() -> size_t { return module ? module->grainManager.getMaxActiveGrains() : 0; }
+        );
         grainDisplay->box.pos = Vec(60, 50);
         grainDisplay->box.size = Vec(120, 15);
         addChild(grainDisplay);
 
-        // Define all parameters with their positions and labels - reduced vertical spacing
+        // Add bouncing bar animation display (controlled by jitter parameter)
+        BouncingBarDisplay* bouncingBar = new BouncingBarDisplay(
+            [module]() -> float { return module ? module->params[GrainsModule::JITTER_PARAM].getValue() : 0.0f; },
+            Colors::BLUE,
+            Colors::WHITE
+        );
+        bouncingBar->box.pos = Vec(60, 70);
+        bouncingBar->box.size = Vec(120, 40);
+        addChild(bouncingBar);
+
+        // Define all parameters with their positions and labels - moved down for bouncing bar
         std::vector<ParamDef> params = {
-            {GrainsModule::DENSITY_PARAM, Vec(60, 80), "Density"},
-            {GrainsModule::DURATION_PARAM, Vec(120, 80), "Duration"},
-            {GrainsModule::ENV_DURATION_PARAM, Vec(180, 80), "Env Dur"},
-            {GrainsModule::SPEED_PARAM, Vec(60, 125), "Speed"},
-            {GrainsModule::DELAY_PARAM, Vec(120, 125), "Delay"},
-            {GrainsModule::PAN_PARAM, Vec(180, 125), "Pan"},
-            {GrainsModule::TIME_DIVISION_PARAM, Vec(60, 170), "Time Div"},
-            {GrainsModule::MAX_GRAINS_PARAM, Vec(120, 170), "Max Grains"},
-            {GrainsModule::JITTER_PARAM, Vec(180, 170), "Jitter"},
-            {GrainsModule::THRESHOLD_PARAM, Vec(120, 215), "Threshold"}
+            {GrainsModule::DENSITY_PARAM, Vec(60, 120), "Density"},
+            {GrainsModule::DURATION_PARAM, Vec(120, 120), "Duration"},
+            {GrainsModule::ENV_DURATION_PARAM, Vec(180, 120), "Env Dur"},
+            {GrainsModule::SPEED_PARAM, Vec(60, 165), "Speed"},
+            {GrainsModule::DELAY_PARAM, Vec(120, 165), "Delay"},
+            {GrainsModule::PAN_PARAM, Vec(180, 165), "Pan"},
+            {GrainsModule::TIME_DIVISION_PARAM, Vec(60, 210), "Time Div"},
+            {GrainsModule::MAX_GRAINS_PARAM, Vec(120, 210), "Max Grains"},
+            {GrainsModule::JITTER_PARAM, Vec(180, 210), "Jitter"},
+            {GrainsModule::THRESHOLD_PARAM, Vec(120, 255), "Threshold"}
         };
 
-        // Define all inputs/outputs with their positions and labels - reduced vertical spacing
+        // Define all inputs/outputs with their positions and labels - moved down for bouncing bar
         std::vector<IODef> ios = {
-            {GrainsModule::CLOCK_INPUT, Vec(60, 270), "Clock", true},
-            {GrainsModule::AUDIO_INPUT_L, Vec(120, 270), "Audio L", true},
-            {GrainsModule::AUDIO_INPUT_R, Vec(180, 270), "Audio R", true},
-            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 315), "Out L", false},
-            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 315), "Out R", false}
+            {GrainsModule::CLOCK_INPUT, Vec(60, 310), "Clock", true},
+            {GrainsModule::AUDIO_INPUT_L, Vec(120, 310), "Audio L", true},
+            {GrainsModule::AUDIO_INPUT_R, Vec(180, 310), "Audio R", true},
+            {GrainsModule::AUDIO_OUTPUT_L, Vec(90, 355), "Out L", false},
+            {GrainsModule::AUDIO_OUTPUT_R, Vec(150, 355), "Out R", false}
         };
 
         // Create parameters and their labels
@@ -459,10 +476,10 @@ struct GrainsModuleWidget : ModuleWidget
         }
 
         // Add transient light
-        addChild(createLightCentered<MediumLight<GreenLight>>(Vec(150, 215), module, GrainsModule::TRANSIENT_LIGHT));
+        addChild(createLightCentered<MediumLight<GreenLight>>(Vec(150, 255), module, GrainsModule::TRANSIENT_LIGHT));
         
         // Add jitter light next to jitter knob
-        addChild(createLightCentered<MediumLight<BlueLight>>(Vec(195, 155), module, GrainsModule::JITTER_LIGHT));
+        addChild(createLightCentered<MediumLight<BlueLight>>(Vec(195, 195), module, GrainsModule::JITTER_LIGHT));
 
         // Create inputs/outputs and their labels
         for (const auto& io : ios) {
