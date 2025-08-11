@@ -47,7 +47,16 @@ struct LadderFilter {
     void process(T in, T dt) {
         dsp::stepRK4(T(0), dt, state, 4, [&](T t, const T x[], T dxdt[]) {
             T inp_t = lf_crossfade(input, in, t / dt);
-            T inputc = lf_clip(inp_t - resonance * x[3]);
+
+            // Default bass-resonance compensation: boost input as resonance rises,
+            // tapered by normalized cutoff so it focuses on low frequencies.
+            const T k = T(0.3); // tune 0.2..0.4 as desired
+            const T sr = T(1) / dt;
+            const T fc = omega0 / T(2 * M_PI);
+            const T fcn = simd::clamp(fc / (T(0.5) * sr), T(0), T(1));
+            const T comp = T(1) + k * resonance * (T(1) - fcn);
+
+            T inputc = lf_clip(comp * inp_t - resonance * x[3]);
             T yc0 = lf_clip(x[0]);
             T yc1 = lf_clip(x[1]);
             T yc2 = lf_clip(x[2]);
