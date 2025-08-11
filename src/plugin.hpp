@@ -8,3 +8,7 @@ extern Plugin* pluginInstance;
 // Declare each Model, defined in each module source file
 
 extern Model* modelBlank;
+extern Model* modelPonyVCO;
+extern Model* modelDrumVoice;
+
+// Move UI components and helpers to dedicated headers. Left here for backward compatibility if other files include them.

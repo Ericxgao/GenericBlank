@@ -1,24 +1,46 @@
 {
-    "slug": "generic-blank",
-    "name": "company",
-    "version": "2.1.0",
-    "license": "MIT",
-    "brand": "my-brand",
-    "author": "",
-    "authorEmail": "",
-    "authorUrl": "",
-    "pluginUrl": "",
-    "manualUrl": "",
-    "sourceUrl": "",
-    "donateUrl": "",
-    "changelogUrl": "",
-    "minRackVersion": "2.4.0",
-    "modules": [
-      {
-        "slug": "blank",
-        "name": "Blank",
-        "description": "Generic blank panel",
-        "tags": [ "Visual", "Blank" ]
-      }
-    ]
-  }
+  "slug": "generic-blank",
+  "name": "company",
+  "version": "2.1.0",
+  "license": "MIT",
+  "brand": "my-brand",
+  "author": "",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "minRackVersion": "2.4.0",
+  "modules": [
+    {
+      "slug": "blank",
+      "name": "Blank",
+      "description": "Generic blank panel",
+      "tags": [
+        "Visual",
+        "Blank"
+      ]
+    },
+    {
+      "slug": "ponyvco",
+      "name": "PonyVCO",
+      "description": "Simple VCO with generic UI (knobs and CV inputs)",
+      "tags": [
+        "Oscillator",
+        "VCO"
+      ]
+    },
+    {
+      "slug": "drumvoice",
+      "name": "DrumVoice",
+      "description": "Dual PonyVCO voice for drum synthesis",
+      "tags": [
+        "Oscillator",
+        "Drum",
+        "VCO"
+      ]
+    }
+  ]
+}
