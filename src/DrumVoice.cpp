@@ -1,7 +1,6 @@
 #include "plugin.hpp"
 #include "PonyVCOEngine.hpp"
 #include "PercEnvelope.hpp"
-#include "LadderFilter.hpp"
 #include "RingModulator.hpp"
 #include "DriveStage.hpp"
 
@@ -25,9 +24,8 @@ struct DrumVoice : Module {
         TZFM_B_AMT_PARAM,
         PENV_DECAY_B_PARAM,
         PENV_AMT_B_PARAM,
-        LDR_CUTOFF_PARAM,
-        LDR_RES_PARAM,
-            // Global ladder cutoff envelope controls
+        VCA_LEVEL_PARAM,
+            // Global VCA envelope controls
             LDR_ENV_DECAY_PARAM,
             LDR_ENV_AMT_PARAM,
         MIX_A_PARAM,
@@ -50,9 +48,8 @@ struct DrumVoice : Module {
         SYNC_B_INPUT,
         MORPH_B_INPUT,
         TZFM_B_AMT_INPUT,
-        LDR_CUTOFF_INPUT,
-        LDR_RES_INPUT,
-            // Global ladder cutoff envelope CVs
+        VCA_LEVEL_INPUT,
+            // Global VCA envelope CVs
             LDR_ENV_DECAY_INPUT,
             LDR_ENV_AMT_INPUT,
         PITCH_TRIG_A_INPUT,
@@ -64,7 +61,10 @@ struct DrumVoice : Module {
         INPUTS_LEN
     };
     enum OutputId {
-        OUT_A_OUTPUT,
+        OSC_A_OUTPUT,
+        OSC_B_OUTPUT,
+        RING_OUTPUT,
+        MIX_OUTPUT,
         OUTPUTS_LEN
     };
     enum LightId { LIGHTS_LEN };
@@ -78,12 +78,11 @@ struct DrumVoice : Module {
     // Pitch envelopes per voice
     PercEnvelope envA;
     PercEnvelope envB;
-        // Global ladder cutoff envelope
+        // Global VCA envelope
         PercEnvelope ldrEnv;
     dsp::SchmittTrigger pitchTrigA;
     dsp::SchmittTrigger pitchTrigB;
     const float maxPitchEnvVolts = 7.0f;
-    LadderFilterSIMD4 ladder[4];
     RingModulatorSIMD4 ring;
     DriveStageSIMD4 drive;
 
@@ -99,11 +98,10 @@ struct DrumVoice : Module {
         configParam(TZFM_A_AMT_PARAM, 0.f, 1.f, 0.0f, "A TZFM amount");
         configParam(PENV_DECAY_A_PARAM, 0.f, 1.f, 0.2f, "A Pitch env decay");
         configParam(PENV_AMT_A_PARAM, 0.f, 1.f, 0.0f, "A Pitch env amount");
-        configParam(LDR_CUTOFF_PARAM, 0.f, 1.f, 0.5f, "Ladder cutoff");
-        configParam(LDR_RES_PARAM, 0.f, 1.f, 0.0f, "Ladder resonance");
-        // Global ladder cutoff envelope params
-        configParam(LDR_ENV_DECAY_PARAM, 0.f, 1.f, 0.2f, "Ladder cutoff env decay");
-        configParam(LDR_ENV_AMT_PARAM, 0.f, 1.f, 0.0f, "Ladder cutoff env amount");
+        configParam(VCA_LEVEL_PARAM, 0.f, 1.f, 0.8f, "VCA level");
+        // Global VCA envelope params
+        configParam(LDR_ENV_DECAY_PARAM, 0.f, 1.f, 0.2f, "VCA env decay");
+        configParam(LDR_ENV_AMT_PARAM, 0.f, 1.f, 0.0f, "VCA env amount");
         configParam(MIX_A_PARAM, 0.f, 1.f, 0.7f, "A");
         configParam(MIX_B_PARAM, 0.f, 1.f, 0.7f, "B");
         configParam(MIX_RING_PARAM, 0.f, 1.f, 0.0f, "Ring");
@@ -116,14 +114,16 @@ struct DrumVoice : Module {
         // Removed VCA A input
         configInput(MORPH_A_INPUT, "A Wave morph CV");
         configInput(TZFM_A_AMT_INPUT, "A TZFM amount CV");
-        configInput(LDR_CUTOFF_INPUT, "Ladder cutoff CV");
-        configInput(LDR_RES_INPUT, "Ladder resonance CV");
-        // Global ladder cutoff envelope CVs
-        configInput(LDR_ENV_DECAY_INPUT, "Ladder cutoff env decay CV");
-        configInput(LDR_ENV_AMT_INPUT, "Ladder cutoff env amount CV");
+        configInput(VCA_LEVEL_INPUT, "VCA level CV");
+        // Global VCA envelope CVs
+        configInput(LDR_ENV_DECAY_INPUT, "VCA env decay CV");
+        configInput(LDR_ENV_AMT_INPUT, "VCA env amount CV");
         configInput(PENV_DECAY_A_INPUT, "A Pitch env decay CV");
         configInput(PENV_AMT_A_INPUT, "A Pitch env amount CV");
-        configOutput(OUT_A_OUTPUT, "Output");
+        configOutput(OSC_A_OUTPUT, "Osc A");
+        configOutput(OSC_B_OUTPUT, "Osc B");
+        configOutput(RING_OUTPUT, "Ring");
+        configOutput(MIX_OUTPUT, "Mix");
 
         // B
         configParam(FREQ_B_PARAM, -0.5f, 0.5f, 0.0f, "B Frequency");
@@ -134,7 +134,7 @@ struct DrumVoice : Module {
         configParam(TZFM_B_AMT_PARAM, 0.f, 1.f, 0.0f, "B TZFM amount");
         configParam(PENV_DECAY_B_PARAM, 0.f, 1.f, 0.2f, "B Pitch env decay");
         configParam(PENV_AMT_B_PARAM, 0.f, 1.f, 0.0f, "B Pitch env amount");
-        // global ladder params configured above
+        // global VCA params configured above
 
         configInput(TZFM_B_INPUT, "B Through-zero FM");
         configInput(TIMBRE_B_INPUT, "B Timber (wavefolder/PWM)");
@@ -143,7 +143,7 @@ struct DrumVoice : Module {
         // Removed VCA B input
         configInput(MORPH_B_INPUT, "B Wave morph CV");
         configInput(TZFM_B_AMT_INPUT, "B TZFM amount CV");
-        // global ladder CVs configured above
+        // global VCA CVs configured above
         configInput(PENV_DECAY_B_INPUT, "B Pitch env decay CV");
         configInput(PENV_AMT_B_INPUT, "B Pitch env amount CV");
         // Single mixed output only
@@ -251,27 +251,23 @@ struct DrumVoice : Module {
                         trigBFlag,
                         voiceBNorm, args);
 
-        // Global ladder filter: mix A and B normalized audio, process once, then output to single output
+        // Global VCA: mix A and B normalized audio, process once, then output to single output
         const int channels = std::max({inputs[VOCT_A_INPUT].getChannels(), inputs[VOCT_B_INPUT].getChannels(), 1});
-        // Trigger global ladder env on either pitch trigger
+        // Trigger global VCA env on either pitch trigger
         if (trigAFlag || trigBFlag) {
             ldrEnv.trigger();
         }
 
-        // Update global ladder env params/CVs and process
+        // Update global VCA env params/CVs and process
         ldrEnv.setDecayParam(params[LDR_ENV_DECAY_PARAM].getValue());
         ldrEnv.setDecayCVVolts(inputs[LDR_ENV_DECAY_INPUT].getNormalVoltage(0.f));
         const float ldrAmtNorm = clamp(params[LDR_ENV_AMT_PARAM].getValue() + inputs[LDR_ENV_AMT_INPUT].getNormalVoltage(0.f) / 10.f, 0.f, 1.f);
         ldrEnv.setStrengthNormalized(ldrAmtNorm);
         const float ldrEnvOut01 = ldrEnv.process(args.sampleTime); // 0..1
-
-        float cutoff01 = params[LDR_CUTOFF_PARAM].getValue() + inputs[LDR_CUTOFF_INPUT].getNormalVoltage(0.f) / 10.f + ldrEnvOut01;
-        cutoff01 = clamp(cutoff01, 0.f, 1.f);
-        float cutoffHz = 20.f * std::pow(2.f, cutoff01 * 10.f);
-        cutoffHz = clamp(cutoffHz, 1.f, args.sampleRate * 0.18f);
-        float res01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
-        res01 = clamp(res01, 0.f, 1.f);
-        float_4 resonance = simd::pow(simd::clamp(float_4(res01), 0.f, 1.f), 2) * 10.f;
+        // Compute VCA gain from level + env
+        float level01 = params[VCA_LEVEL_PARAM].getValue() + inputs[VCA_LEVEL_INPUT].getNormalVoltage(0.f) / 10.f;
+        level01 = clamp(level01, 0.f, 1.f);
+        const float vcaGain01 = clamp(level01 + ldrEnvOut01, 0.f, 1.f);
 
         for (int c = 0; c < channels; c += 4) {
             const simd::float_4 a = voiceANorm[c / 4];
@@ -283,14 +279,19 @@ struct DrumVoice : Module {
             const simd::float_4 mixNormPreDrive = a * simd::float_4(mixA) + b * simd::float_4(mixB) + ringed * simd::float_4(mixRing);
             const simd::float_4 driven = drive.process(mixNormPreDrive, args.sampleTime, params[DRIVE_PARAM].getValue());
             const simd::float_4 mixNorm = driven;
-            ladder[c / 4].setCutoff(float_4(cutoffHz));
-            ladder[c / 4].setResonance(resonance);
-            ladder[c / 4].process(mixNorm, args.sampleTime);
-            float_4 filtered = ladder[c / 4].lowpass();
-            float_4 scaled = 5.f * filtered;
-            outputs[OUT_A_OUTPUT].setVoltageSimd(scaled, c);
+            const simd::float_4 mixScaled = 5.f * mixNorm * simd::float_4(vcaGain01);
+            const simd::float_4 aScaled = 5.f * a;
+            const simd::float_4 bScaled = 5.f * b;
+            const simd::float_4 ringScaled = 5.f * ringed;
+            outputs[MIX_OUTPUT].setVoltageSimd(mixScaled, c);
+            outputs[OSC_A_OUTPUT].setVoltageSimd(aScaled, c);
+            outputs[OSC_B_OUTPUT].setVoltageSimd(bScaled, c);
+            outputs[RING_OUTPUT].setVoltageSimd(ringScaled, c);
         }
-        outputs[OUT_A_OUTPUT].setChannels(channels);
+        outputs[MIX_OUTPUT].setChannels(channels);
+        outputs[OSC_A_OUTPUT].setChannels(channels);
+        outputs[OSC_B_OUTPUT].setChannels(channels);
+        outputs[RING_OUTPUT].setChannels(channels);
     }
 };
 
@@ -325,10 +326,10 @@ struct DrumVoiceWidget : ModuleWidget {
         const float jackRow3Y = 104.0f; // jacks row 3 (extra CVs)
         const float jackRow4Y = 118.0f; // jacks row 4 (extra CVs)
         const float outY = 128.0f;      // output jack Y
-        const float smallKnobDX = 12.0f; // horizontal spacing for small knobs around column center (wider for 20hp)
+        const float smallKnobDX = 10.0f; // horizontal spacing for small knobs around column center (wider for 20hp)
         const float jackDX = 12.0f;      // horizontal spacing for jack triplets around column center (wider for 20hp)
-        const float ladderKnobY = 70.0f;  // dedicated row for global ladder controls
-        const float driveKnobY = 82.0f;   // drive knob centered below ladder
+        const float ladderKnobY = 70.0f;  // dedicated row for global VCA controls
+        const float driveKnobY = 82.0f;   // drive knob centered below VCA
         const float envKnobY = 88.0f;     // small env knobs flanking drive
         const float mixRowY = 96.0f;      // three mix knobs below drive
 
@@ -343,9 +344,8 @@ struct DrumVoiceWidget : ModuleWidget {
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft - 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_AMT_A_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_DECAY_A_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + 1.5f * smallKnobDX, smallKnobY)), module, DrumVoice::WAVE_A_PARAM));
-        // Global ladder filter knobs (cutoff left, resonance right) centered between columns
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol - smallKnobDX, ladderKnobY)), module, DrumVoice::LDR_CUTOFF_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol + smallKnobDX, ladderKnobY)), module, DrumVoice::LDR_RES_PARAM));
+        // Global VCA knob (level) centered between columns
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol, ladderKnobY)), module, DrumVoice::VCA_LEVEL_PARAM));
         // Drive knob centered below ladder, with env amount/decay flanking
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol, driveKnobY)), module, DrumVoice::DRIVE_PARAM));
         addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol - smallKnobDX, envKnobY)), module, DrumVoice::LDR_ENV_AMT_PARAM));
@@ -364,14 +364,17 @@ struct DrumVoiceWidget : ModuleWidget {
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft - jackDX, jackRow3Y)), module, DrumVoice::PENV_DECAY_A_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft, jackRow3Y)), module, DrumVoice::TZFM_A_AMT_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft + jackDX, jackRow3Y)), module, DrumVoice::PENV_AMT_A_INPUT));
-        // Row 4: Global ladder CVs centered between columns (cutoff, res, env amt, env decay)
+        // Row 4: Global VCA CVs centered between columns (level, env amt, env decay)
         const float mid = (colLeft + colRight) * 0.5f;
-        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid - 1.5f * jackDX, jackRow4Y)), module, DrumVoice::LDR_CUTOFF_INPUT));
-        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid - 0.5f * jackDX, jackRow4Y)), module, DrumVoice::LDR_RES_INPUT));
-        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid + 0.5f * jackDX, jackRow4Y)), module, DrumVoice::LDR_ENV_AMT_INPUT));
-        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid + 1.5f * jackDX, jackRow4Y)), module, DrumVoice::LDR_ENV_DECAY_INPUT));
-        // Single output centered at bottom
-        addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec((colLeft + colRight) * 0.5f, outY)), module, DrumVoice::OUT_A_OUTPUT));
+        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid - jackDX, jackRow4Y)), module, DrumVoice::VCA_LEVEL_INPUT));
+        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid, jackRow4Y)), module, DrumVoice::LDR_ENV_AMT_INPUT));
+        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(mid + jackDX, jackRow4Y)), module, DrumVoice::LDR_ENV_DECAY_INPUT));
+        // Outputs: evenly spaced across bottom row (Osc A, Ring, Mix, Osc B)
+        const float outMid = (colLeft + colRight) * 0.5f;
+        addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(outMid - 1.5f * jackDX, outY)), module, DrumVoice::OSC_A_OUTPUT));
+        addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(outMid - 0.5f * jackDX, outY)), module, DrumVoice::RING_OUTPUT));
+        addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(outMid + 0.5f * jackDX, outY)), module, DrumVoice::MIX_OUTPUT));
+        addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(outMid + 1.5f * jackDX, outY)), module, DrumVoice::OSC_B_OUTPUT));
 
         // Voice B (right column)
         addParam(createParamCentered<RoundHugeBlackKnob>(mm2px(Vec(colRight, knobY1)), module, DrumVoice::FREQ_B_PARAM));
@@ -392,7 +395,7 @@ struct DrumVoiceWidget : ModuleWidget {
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight - jackDX, jackRow3Y)), module, DrumVoice::PENV_DECAY_B_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight, jackRow3Y)), module, DrumVoice::TZFM_B_AMT_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight + jackDX, jackRow3Y)), module, DrumVoice::PENV_AMT_B_INPUT));
-        // (global ladder CVs already added above)
+        // (global VCA CVs already added above)
         // removed second output
 
         // Per-voice pitch triggers near top (B is normalled from A)
