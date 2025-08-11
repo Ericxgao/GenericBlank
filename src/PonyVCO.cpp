@@ -83,15 +83,14 @@ struct PonyVCO : Module {
 			WAVE_PARAM,
 		PARAMS_LEN
 	};
-	enum InputId {
-		TZFM_INPUT,
-		TIMBRE_INPUT,
-		VOCT_INPUT,
-		SYNC_INPUT,
-		VCA_INPUT,
-			MORPH_INPUT,
-		INPUTS_LEN
-	};
+    enum InputId {
+        TZFM_INPUT,
+        TIMBRE_INPUT,
+        VOCT_INPUT,
+        SYNC_INPUT,
+        VCA_INPUT,
+        INPUTS_LEN
+    };
 	enum OutputId {
 		OUT_OUTPUT,
 		OUTPUTS_LEN
@@ -134,15 +133,14 @@ struct PonyVCO : Module {
 		auto octParam = configSwitch(OCT_PARAM, 0.f, 6.f, 4.f, "Octave", {"C1", "C2", "C3", "C4", "C5", "C6", "C7"});
 		octParam->snapEnabled = true;
 
-		// Continuous wave morph 0..3 (0:Sin -> 1:Tri -> 2:Saw -> 3:Pulse)
-		configParam(WAVE_PARAM, 0.f, 3.f, 0.f, "Wave morph");
+        auto waveParam = configSwitch(WAVE_PARAM, 0.f, 3.f, 0.f, "Wave", {"Sin", "Triangle", "Sawtooth", "Pulse"});
+        waveParam->snapEnabled = true;
 
 		configInput(TZFM_INPUT, "Through-zero FM");
 		configInput(TIMBRE_INPUT, "Timber (wavefolder/PWM)");
 		configInput(VOCT_INPUT, "Volt per octave");
 		configInput(SYNC_INPUT, "Hard sync");
-		configInput(VCA_INPUT, "VCA");
-		configInput(MORPH_INPUT, "Wave morph CV");
+        configInput(VCA_INPUT, "VCA");
 		configOutput(OUT_OUTPUT, "Waveform");
 
 		// calculate up/downsampling rates
@@ -172,7 +170,7 @@ struct PonyVCO : Module {
 		const int rangeIndex = params[RANGE_PARAM].getValue();
 		const bool lfoMode = rangeIndex == 3;
 
-		const float morphParamScalar = params[WAVE_PARAM].getValue();
+        const Waveform waveform = (Waveform) params[WAVE_PARAM].getValue();
 		const float mult = lfoMode ? 1.0 : dsp::FREQ_C4;
 		const float baseFreq = std::pow(2, (int)(params[OCT_PARAM].getValue() - 3)) * mult;
 		const int oversamplingRatio = lfoMode ? 1 : oversampler[0].getOversamplingRatio();
@@ -210,12 +208,16 @@ struct PonyVCO : Module {
 			// for it to be added back in for hardware compatibility reasons
 			const float_4 pulseDCOffset = (!removePulseDC) * 2.f * (0.5f - pw);
 
-			// hard sync: reset to 0.25 if morph region is in [0,1) (sine), else reset to 0
-			const float_4 morphCV = inputs[MORPH_INPUT].getPolyVoltageSimd<float_4>(c);
-			const float_4 morph = simd::clamp(float_4(morphParamScalar) + 3.f * morphCV / 10.f, 0.f, 3.f);
-			const float_4 resetPhase = simd::ifelse(morph < 1.0f, 0.25f, 0.f);
-			const float_4 syncMask = syncTrigger[c / 4].process(inputs[SYNC_INPUT].getPolyVoltageSimd<float_4>(c));
-			phase[c / 4] = simd::ifelse(syncMask, resetPhase, phase[c / 4]);
+            // hard sync
+            const float_4 syncMask = syncTrigger[c / 4].process(inputs[SYNC_INPUT].getPolyVoltageSimd<float_4>(c));
+            if (waveform == WAVE_SIN) {
+                // hardware waveform is actually cos, so pi/2 phase offset is required
+                // - variable phase is defined on [0, 1] rather than [0, 2pi] so pi/2 -> 0.25
+                phase[c / 4] = simd::ifelse(syncMask, 0.25f, phase[c / 4]);
+            }
+            else {
+                phase[c / 4] = simd::ifelse(syncMask, 0.f, phase[c / 4]);
+            }
 
 			float_4* osBuffer = oversampler[c / 4].getOSBuffer();
 			for (int i = 0; i < oversamplingRatio; ++i) {
@@ -224,59 +226,47 @@ struct PonyVCO : Module {
 				// ensure within [0, 1]
 				phase[c / 4] -= simd::floor(phase[c / 4]);
 
-				// Build phases for DPW-based shapes
-				float_4 phases[3];
-				phases[0] = phase[c / 4] - 2 * deltaBasePhase + simd::ifelse(phase[c / 4] < 2 * deltaBasePhase, 1.f, 0.f);
-				phases[1] = phase[c / 4] - deltaBasePhase + simd::ifelse(phase[c / 4] < deltaBasePhase, 1.f, 0.f);
-				phases[2] = phase[c / 4];
+                if (waveform == WAVE_SIN) {
+                    osBuffer[i] = sin2pi_pade_05_5_4(phase[c / 4]);
+                }
+                else {
+                    // Build phases for DPW-based shapes
+                    float_4 phases[3];
+                    phases[0] = phase[c / 4] - 2 * deltaBasePhase + simd::ifelse(phase[c / 4] < 2 * deltaBasePhase, 1.f, 0.f);
+                    phases[1] = phase[c / 4] - deltaBasePhase + simd::ifelse(phase[c / 4] < deltaBasePhase, 1.f, 0.f);
+                    phases[2] = phase[c / 4];
 
-				// Compute each waveform
-				float_4 v_sin = sin2pi_pade_05_5_4(phase[c / 4]);
-				{
-					v_sin = wavefolder(v_sin, (1 - 0.85 * timbre), c);
-				}
+                    switch (waveform) {
+                        case WAVE_TRI: {
+                            const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase[c / 4] - 1.0);
+                            const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
+                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                            break;
+                        }
+                        case WAVE_SAW: {
+                            const float_4 dpwOrder1 = 2 * phase[c / 4] - 1.0;
+                            const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
+                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                            break;
+                        }
+                        case WAVE_PULSE: {
+                            float_4 dpwOrder1 = simd::ifelse(phase[c / 4] < 1. - pw, +1.0, -1.0);
+                            dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pw) : 0.f;
+                            float_4 saw = aliasSuppressedSaw(phases);
+                            float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
+                            float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
+                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                            // Small trim to better match perceived loudness vs other shapes
+                            osBuffer[i] *= 0.3f;
+                            break;
+                        }
+                        default: break;
+                    }
+                }
 
-				float_4 v_tri;
-				{
-					const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase[c / 4] - 1.0);
-					const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
-					v_tri = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-					v_tri = wavefolder(v_tri, (1 - 0.85 * timbre), c);
-				}
-
-				float_4 v_saw;
-				{
-					const float_4 dpwOrder1 = 2 * phase[c / 4] - 1.0;
-					const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
-					v_saw = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-					v_saw = wavefolder(v_saw, (1 - 0.85 * timbre), c);
-				}
-
-				float_4 v_pulse;
-				{
-					float_4 dpwOrder1 = simd::ifelse(phase[c / 4] < 1. - pw, +1.0, -1.0);
-					dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pw) : 0.f;
-					float_4 saw = aliasSuppressedSaw(phases);
-					float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
-					float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
-					v_pulse = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-					// Small trim to better match perceived loudness vs other shapes
-					v_pulse *= 0.3f;
-				}
-
-				// Morph between adjacent shapes using equal-power crossfades
-				const float_4 mClamped = simd::clamp(morph, 0.0f, 2.999f);
-				const float_4 base = simd::floor(mClamped);
-				const float_4 frac = mClamped - base;
-				const float_4 theta = frac * float(M_PI_2);
-				const float_4 w0 = simd::cos(theta);
-				const float_4 w1 = simd::sin(theta);
-				const float_4 out0 = w0 * v_sin  + w1 * v_tri;   // [0,1)
-				const float_4 out1 = w0 * v_tri  + w1 * v_saw;   // [1,2)
-				const float_4 out2 = w0 * v_saw  + w1 * v_pulse; // [2,3)
-				const float_4 sel0 = (base < 1.0f);
-				const float_4 sel1 = (base >= 1.0f) & (base < 2.0f);
-				osBuffer[i] = simd::ifelse(sel0, out0, simd::ifelse(sel1, out1, out2));
+                if (waveform != WAVE_PULSE) {
+                    osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre), c);
+                }
 
 			} 	// end of oversampling loop
 
@@ -387,7 +377,6 @@ struct PonyVCOWidget : ModuleWidget {
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(15.0, 90.0)), module, PonyVCO::VOCT_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(5.0, 105.0)), module, PonyVCO::SYNC_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(10.0, 105.0)), module, PonyVCO::VCA_INPUT));
-        addInput(createInputCentered<PJ301MPort>(mm2px(Vec(15.0, 105.0)), module, PonyVCO::MORPH_INPUT));
 
         // Output centered below
         addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(10.0, 122.0)), module, PonyVCO::OUT_OUTPUT));
