@@ -1,6 +1,7 @@
 #include "plugin.hpp"
 #include "PonyVCOEngine.hpp"
 #include "PercEnvelope.hpp"
+#include "LadderFilter.hpp"
 
 using simd::float_4;
 
@@ -22,6 +23,8 @@ struct DrumVoice : Module {
         TZFM_B_AMT_PARAM,
         PENV_DECAY_B_PARAM,
         PENV_AMT_B_PARAM,
+        LDR_CUTOFF_PARAM,
+        LDR_RES_PARAM,
         PARAMS_LEN
     };
     enum InputId {
@@ -40,6 +43,8 @@ struct DrumVoice : Module {
         VCA_B_INPUT,
         MORPH_B_INPUT,
         TZFM_B_AMT_INPUT,
+        LDR_CUTOFF_INPUT,
+        LDR_RES_INPUT,
         PITCH_TRIG_A_INPUT,
         PITCH_TRIG_B_INPUT,
         PENV_DECAY_A_INPUT,
@@ -67,21 +72,22 @@ struct DrumVoice : Module {
     dsp::SchmittTrigger pitchTrigA;
     dsp::SchmittTrigger pitchTrigB;
     const float maxPitchEnvVolts = 10.0f;
+    LadderFilterSIMD4 ladder[4];
 
     DrumVoice() {
         config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
 
         // A
         configParam(FREQ_A_PARAM, -0.5f, 0.5f, 0.0f, "A Frequency");
-        auto rangeA = configSwitch(RANGE_A_PARAM, 0.f, 3.f, 0.f, "A Range", {"VCO: Full", "VCO: Octave", "VCO: Semitone", "LFO"});
-        rangeA->snapEnabled = true;
+        // Range is fixed to Full; no UI
         configParam(TIMBRE_A_PARAM, 0.f, 1.f, 0.f, "A Timbre");
-        auto octA = configSwitch(OCT_A_PARAM, 0.f, 6.f, 4.f, "A Octave", {"C1", "C2", "C3", "C4", "C5", "C6", "C7"});
-        octA->snapEnabled = true;
+        // Octave selector removed
         configParam(WAVE_A_PARAM, 0.f, 3.f, 0.f, "A Wave morph");
         configParam(TZFM_A_AMT_PARAM, 0.f, 1.f, 0.0f, "A TZFM amount");
         configParam(PENV_DECAY_A_PARAM, 0.f, 1.f, 0.2f, "A Pitch env decay");
         configParam(PENV_AMT_A_PARAM, 0.f, 1.f, 0.0f, "A Pitch env amount");
+        configParam(LDR_CUTOFF_PARAM, 0.f, 1.f, 0.5f, "Ladder cutoff");
+        configParam(LDR_RES_PARAM, 0.f, 1.f, 0.0f, "Ladder resonance");
 
         configInput(TZFM_A_INPUT, "A Through-zero FM");
         configInput(TIMBRE_A_INPUT, "A Timber (wavefolder/PWM)");
@@ -90,21 +96,22 @@ struct DrumVoice : Module {
         configInput(VCA_A_INPUT, "A VCA");
         configInput(MORPH_A_INPUT, "A Wave morph CV");
         configInput(TZFM_A_AMT_INPUT, "A TZFM amount CV");
+        configInput(LDR_CUTOFF_INPUT, "Ladder cutoff CV");
+        configInput(LDR_RES_INPUT, "Ladder resonance CV");
         configInput(PENV_DECAY_A_INPUT, "A Pitch env decay CV");
         configInput(PENV_AMT_A_INPUT, "A Pitch env amount CV");
         configOutput(OUT_A_OUTPUT, "A Waveform");
 
         // B
         configParam(FREQ_B_PARAM, -0.5f, 0.5f, 0.0f, "B Frequency");
-        auto rangeB = configSwitch(RANGE_B_PARAM, 0.f, 3.f, 0.f, "B Range", {"VCO: Full", "VCO: Octave", "VCO: Semitone", "LFO"});
-        rangeB->snapEnabled = true;
+        // Range is fixed to Full; no UI
         configParam(TIMBRE_B_PARAM, 0.f, 1.f, 0.f, "B Timbre");
-        auto octB = configSwitch(OCT_B_PARAM, 0.f, 6.f, 4.f, "B Octave", {"C1", "C2", "C3", "C4", "C5", "C6", "C7"});
-        octB->snapEnabled = true;
+        // Octave selector removed
         configParam(WAVE_B_PARAM, 0.f, 3.f, 0.f, "B Wave morph");
         configParam(TZFM_B_AMT_PARAM, 0.f, 1.f, 0.0f, "B TZFM amount");
         configParam(PENV_DECAY_B_PARAM, 0.f, 1.f, 0.2f, "B Pitch env decay");
         configParam(PENV_AMT_B_PARAM, 0.f, 1.f, 0.0f, "B Pitch env amount");
+        // global ladder params configured above
 
         configInput(TZFM_B_INPUT, "B Through-zero FM");
         configInput(TIMBRE_B_INPUT, "B Timber (wavefolder/PWM)");
@@ -113,6 +120,7 @@ struct DrumVoice : Module {
         configInput(VCA_B_INPUT, "B VCA");
         configInput(MORPH_B_INPUT, "B Wave morph CV");
         configInput(TZFM_B_AMT_INPUT, "B TZFM amount CV");
+        // global ladder CVs configured above
         configInput(PENV_DECAY_B_INPUT, "B Pitch env decay CV");
         configInput(PENV_AMT_B_INPUT, "B Pitch env amount CV");
         configOutput(OUT_B_OUTPUT, "B Waveform");
@@ -136,7 +144,7 @@ struct DrumVoice : Module {
                          PercEnvelope& penv, int penvDecayParam, int penvAmtParam, int penvDecayIn, int penvAmtIn,
                          PonyVCOEngine* engines, float_4* lastOutReadOther, float_4* lastOutWriteSelf,
                          bool pitchTrigFired,
-                         int outId, const ProcessArgs& args) {
+                         float_4* voiceNormOut, const ProcessArgs& args) {
 
         const int channels = std::max({inputs[tzfmIn].getChannels(), inputs[voctIn].getChannels(), inputs[timbreIn].getChannels(), inputs[morphIn].getChannels(), 1});
         float_4* dummy = nullptr; (void)dummy; // suppress warnings if unused
@@ -149,9 +157,12 @@ struct DrumVoice : Module {
             // triggering handled per voice in process()
             penv.setDecayParam(params[penvDecayParam].getValue());
             penv.setDecayCVVolts(inputs[penvDecayIn].getVoltage());
-            const float amtNorm = clamp(params[penvAmtParam].getValue() + inputs[penvAmtIn].getVoltage() / 10.f, 0.f, 1.f);
+            const float amtSigned = clamp((params[penvAmtParam].getValue() - 0.5f) * 2.f
+                                           + inputs[penvAmtIn].getVoltage() / 10.f,
+                                           -1.f, 1.f);
             float penvOut = penv.process(args.sampleTime); // 0..1
-            const float penvVolts = penvOut * amtNorm * maxPitchEnvVolts;
+            // Center (0) = no pitch modulation; below center sweeps down, above center sweeps up
+            const float penvVolts = penvOut * amtSigned * maxPitchEnvVolts;
             const float_4 pitch = inputs[voctIn].getPolyVoltageSimd<float_4>(c) + params[freqParam].getValue() * range[rangeIndex] + penvVolts;
             const float_4 freq = baseFreq * simd::pow(2.f, pitch);
             // Calculate normalized TZFM: external TZFM if connected, otherwise from the other voice output scaled by amount
@@ -173,33 +184,35 @@ struct DrumVoice : Module {
             );
 
             const float_4 gain = simd::clamp(inputs[vcaIn].getNormalPolyVoltageSimd<float_4>(10.f, c) / 10.f, 0.f, 1.f);
-            const float_4 scaledOut = 5.f * out * gain;
-            outputs[outId].setVoltageSimd(scaledOut, c);
-            lastOutWriteSelf[c / 4] = scaledOut;
+            const float_4 preFilterScaled = 5.f * out * gain; // for cross-normalization
+            lastOutWriteSelf[c / 4] = preFilterScaled;
+            voiceNormOut[c / 4] = out * gain; // normalized ±1 per voice
         }
-        outputs[outId].setChannels(channels);
+        // no output written here
     }
 
     void process(const ProcessArgs& args) override {
         // Voice A controls
-        const int rangeIdxA = params[RANGE_A_PARAM].getValue();
-        const bool lfoA = rangeIdxA == 3;
+        const int rangeIdxA = 0; // Full range
+        const bool lfoA = false;
         const float multA = lfoA ? 1.0 : dsp::FREQ_C4;
         const float baseFreqA = std::pow(2, (int)(params[OCT_A_PARAM].getValue() - 3)) * multA;
         // Compute trigger for A
         float trigSrcA = inputs[PITCH_TRIG_A_INPUT].getNormalVoltage(0.f);
         bool trigAFlag = pitchTrigA.process(rescale(trigSrcA, 0.1f, 2.f, 0.f, 1.f));
+        float_4 voiceANorm[4] = {};
+        float_4 voiceBNorm[4] = {};
         processOneVoice(0, lfoA, baseFreqA, rangeIdxA,
                         FREQ_A_PARAM, TIMBRE_A_PARAM, TIMBRE_A_INPUT, VOCT_A_INPUT, TZFM_A_INPUT, SYNC_A_INPUT, VCA_A_INPUT, WAVE_A_PARAM, MORPH_A_INPUT,
                         TZFM_A_AMT_PARAM, TZFM_A_AMT_INPUT,
                         envA, PENV_DECAY_A_PARAM, PENV_AMT_A_PARAM, PENV_DECAY_A_INPUT, PENV_AMT_A_INPUT,
                         enginesA, lastOutB, lastOutA,
                         trigAFlag,
-                        OUT_A_OUTPUT, args);
+                        voiceANorm, args);
 
         // Voice B controls
-        const int rangeIdxB = params[RANGE_B_PARAM].getValue();
-        const bool lfoB = rangeIdxB == 3;
+        const int rangeIdxB = 0; // Full range
+        const bool lfoB = false;
         const float multB = lfoB ? 1.0 : dsp::FREQ_C4;
         const float baseFreqB = std::pow(2, (int)(params[OCT_B_PARAM].getValue() - 3)) * multB;
         // Compute trigger for B: prefer own, else normalled from A
@@ -211,7 +224,30 @@ struct DrumVoice : Module {
                         envB, PENV_DECAY_B_PARAM, PENV_AMT_B_PARAM, PENV_DECAY_B_INPUT, PENV_AMT_B_INPUT,
                         enginesB, lastOutA, lastOutB,
                         trigBFlag,
-                        OUT_B_OUTPUT, args);
+                        voiceBNorm, args);
+
+        // Global ladder filter: mix A and B normalized audio, process once, then output to both outputs
+        const int channels = std::max(outputs[OUT_A_OUTPUT].getChannels(), outputs[OUT_B_OUTPUT].getChannels());
+        float cutoff01 = params[LDR_CUTOFF_PARAM].getValue() + inputs[LDR_CUTOFF_INPUT].getNormalVoltage(0.f) / 10.f;
+        cutoff01 = clamp(cutoff01, 0.f, 1.f);
+        float cutoffHz = 20.f * std::pow(2.f, cutoff01 * 10.f);
+        cutoffHz = clamp(cutoffHz, 1.f, args.sampleRate * 0.18f);
+        float res01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
+        res01 = clamp(res01, 0.f, 1.f);
+        float_4 resonance = simd::pow(simd::clamp(float_4(res01), 0.f, 1.f), 2) * 10.f;
+
+        for (int c = 0; c < channels; c += 4) {
+            float_4 mixNorm = voiceANorm[c / 4] + voiceBNorm[c / 4];
+            ladder[c / 4].setCutoff(float_4(cutoffHz));
+            ladder[c / 4].setResonance(resonance);
+            ladder[c / 4].process(mixNorm, args.sampleTime);
+            float_4 filtered = ladder[c / 4].lowpass();
+            float_4 scaled = 5.f * filtered;
+            outputs[OUT_A_OUTPUT].setVoltageSimd(scaled, c);
+            outputs[OUT_B_OUTPUT].setVoltageSimd(scaled, c);
+        }
+        outputs[OUT_A_OUTPUT].setChannels(channels);
+        outputs[OUT_B_OUTPUT].setChannels(channels);
     }
 };
 
@@ -237,6 +273,7 @@ struct DrumVoiceWidget : ModuleWidget {
         const float panelWidthMM = 20.0f * 5.08f; // 101.6mm
         const float colLeft = panelWidthMM * 1.0f / 3.0f;   // ~33.87mm
         const float colRight = panelWidthMM * 2.0f / 3.0f;  // ~67.73mm
+        const float midCol = (colLeft + colRight) * 0.5f;   // centered between columns
         const float knobY1 = 16.0f;     // large knob Y
         const float knobY2 = 34.0f;     // large knob Y 2
         const float smallKnobY = 52.0f; // small knobs row
@@ -247,19 +284,22 @@ struct DrumVoiceWidget : ModuleWidget {
         const float outY = 128.0f;      // output jack Y
         const float smallKnobDX = 12.0f; // horizontal spacing for small knobs around column center (wider for 20hp)
         const float jackDX = 12.0f;      // horizontal spacing for jack triplets around column center (wider for 20hp)
+        const float ladderKnobY = 80.0f;  // dedicated row for global ladder controls
 
         // Two voices side-by-side columns
         // Column centers in mm: left voice at colLeft, right voice at colRight
         // Voice A (left column)
         addParam(createParamCentered<RoundHugeBlackKnob>(mm2px(Vec(colLeft, knobY1)), module, DrumVoice::FREQ_A_PARAM));
         addParam(createParamCentered<RoundLargeBlackKnob>(mm2px(Vec(colLeft, knobY2)), module, DrumVoice::TIMBRE_A_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft - smallKnobDX, smallKnobY)), module, DrumVoice::RANGE_A_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft, smallKnobY)), module, DrumVoice::OCT_A_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + smallKnobDX, smallKnobY)), module, DrumVoice::WAVE_A_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft, smallKnobY + 10.0f)), module, DrumVoice::TZFM_A_AMT_PARAM));
-        // Pitch envelope knobs (decay left, amount right)
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft - smallKnobDX, smallKnobY + 22.0f)), module, DrumVoice::PENV_DECAY_A_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + smallKnobDX, smallKnobY + 22.0f)), module, DrumVoice::PENV_AMT_A_PARAM));
+        // Range and Octave controls removed
+        // Single-row small knobs per voice: TZFM amt, PENV amt, PENV decay, Wave morph
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft - 1.5f * smallKnobDX, smallKnobY)), module, DrumVoice::TZFM_A_AMT_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft - 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_AMT_A_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_DECAY_A_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colLeft + 1.5f * smallKnobDX, smallKnobY)), module, DrumVoice::WAVE_A_PARAM));
+        // Global ladder filter knobs (cutoff left, resonance right) centered between columns
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol - smallKnobDX, ladderKnobY)), module, DrumVoice::LDR_CUTOFF_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(midCol + smallKnobDX, ladderKnobY)), module, DrumVoice::LDR_RES_PARAM));
 
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft - jackDX, jackRow1Y)), module, DrumVoice::TZFM_A_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft, jackRow1Y)), module, DrumVoice::TIMBRE_A_INPUT));
@@ -271,18 +311,20 @@ struct DrumVoiceWidget : ModuleWidget {
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft - jackDX, jackRow3Y)), module, DrumVoice::PENV_DECAY_A_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft, jackRow3Y)), module, DrumVoice::TZFM_A_AMT_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colLeft + jackDX, jackRow3Y)), module, DrumVoice::PENV_AMT_A_INPUT));
+        // Row 4: Global ladder CVs centered between columns
+        addInput(createInputCentered<PJ301MPort>(mm2px(Vec((colLeft + colRight) * 0.5f - jackDX, jackRow4Y)), module, DrumVoice::LDR_CUTOFF_INPUT));
+        addInput(createInputCentered<PJ301MPort>(mm2px(Vec((colLeft + colRight) * 0.5f + jackDX, jackRow4Y)), module, DrumVoice::LDR_RES_INPUT));
         addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(colLeft, outY)), module, DrumVoice::OUT_A_OUTPUT));
 
         // Voice B (right column)
         addParam(createParamCentered<RoundHugeBlackKnob>(mm2px(Vec(colRight, knobY1)), module, DrumVoice::FREQ_B_PARAM));
         addParam(createParamCentered<RoundLargeBlackKnob>(mm2px(Vec(colRight, knobY2)), module, DrumVoice::TIMBRE_B_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight - smallKnobDX, smallKnobY)), module, DrumVoice::RANGE_B_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight, smallKnobY)), module, DrumVoice::OCT_B_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight + smallKnobDX, smallKnobY)), module, DrumVoice::WAVE_B_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight, smallKnobY + 10.0f)), module, DrumVoice::TZFM_B_AMT_PARAM));
-        // Pitch envelope knobs (decay left, amount right)
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight - smallKnobDX, smallKnobY + 22.0f)), module, DrumVoice::PENV_DECAY_B_PARAM));
-        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight + smallKnobDX, smallKnobY + 22.0f)), module, DrumVoice::PENV_AMT_B_PARAM));
+        // Range and Octave controls removed
+        // Single-row small knobs per voice: TZFM amt, PENV amt, PENV decay, Wave morph
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight - 1.5f * smallKnobDX, smallKnobY)), module, DrumVoice::TZFM_B_AMT_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight - 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_AMT_B_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight + 0.5f * smallKnobDX, smallKnobY)), module, DrumVoice::PENV_DECAY_B_PARAM));
+        addParam(createParamCentered<RoundSmallBlackKnob>(mm2px(Vec(colRight + 1.5f * smallKnobDX, smallKnobY)), module, DrumVoice::WAVE_B_PARAM));
 
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight - jackDX, jackRow1Y)), module, DrumVoice::TZFM_B_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight, jackRow1Y)), module, DrumVoice::TIMBRE_B_INPUT));
@@ -294,6 +336,7 @@ struct DrumVoiceWidget : ModuleWidget {
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight - jackDX, jackRow3Y)), module, DrumVoice::PENV_DECAY_B_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight, jackRow3Y)), module, DrumVoice::TZFM_B_AMT_INPUT));
         addInput(createInputCentered<PJ301MPort>(mm2px(Vec(colRight + jackDX, jackRow3Y)), module, DrumVoice::PENV_AMT_B_INPUT));
+        // (global ladder CVs already added above)
         addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(colRight, outY)), module, DrumVoice::OUT_B_OUTPUT));
 
         // Per-voice pitch triggers near top (B is normalled from A)
