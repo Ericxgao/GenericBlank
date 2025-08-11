@@ -4,6 +4,7 @@ FLAGS +=
 
 SOURCES += src/plugin.cpp
 SOURCES += src/Blank.cpp
+SOURCES += src/DrumSequencer.cpp
 
 DISTRIBUTABLES += res
 # DISTRIBUTABLES += presets
