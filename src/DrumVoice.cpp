@@ -100,6 +100,7 @@ struct DrumVoice : Module {
         configParam(TIMBRE_A_PARAM, 0.f, 1.f, 0.f, "A Timbre");
         // Octave selector removed
         configParam(WAVE_A_PARAM, 0.f, 3.f, 0.f, "A Wave morph");
+        paramQuantities[WAVE_A_PARAM]->snapEnabled = true;
         configParam(TZFM_A_AMT_PARAM, 0.f, 1.f, 0.0f, "A TZFM amount");
         configParam(EXPFM_A_PARAM, 0.f, 1.f, 0.0f, "A Exp FM index");
         configParam(PENV_DECAY_PARAM, 0.f, 1.f, 0.2f, "Pitch env decay");
@@ -142,6 +143,7 @@ struct DrumVoice : Module {
         configParam(TIMBRE_B_PARAM, 0.f, 1.f, 0.f, "B Timbre");
         // Octave selector removed
         configParam(WAVE_B_PARAM, 0.f, 3.f, 0.f, "B Wave morph");
+        paramQuantities[WAVE_B_PARAM]->snapEnabled = true;
         configParam(TZFM_B_AMT_PARAM, 0.f, 1.f, 0.0f, "B TZFM amount");
         configParam(EXPFM_B_PARAM, 0.f, 1.f, 0.0f, "B Exp FM index");
         // global ladder params configured above
@@ -231,42 +233,99 @@ struct DrumVoice : Module {
     }
 
     void process(const ProcessArgs& args) override {
-        // Voice A controls
-        const int rangeIdxA = 0; // Full range
+        // Voice A/B shared and fused processing
+        const int rangeIdxA = 0;
+        const int rangeIdxB = 0;
         const bool lfoA = false;
+        const bool lfoB = false;
         const float multA = lfoA ? 1.0 : dsp::FREQ_C4;
+        const float multB = lfoB ? 1.0 : dsp::FREQ_C4;
         const float baseFreqA = std::pow(2, (int)(params[OCT_A_PARAM].getValue() - 3)) * multA;
-        // Compute single trigger
+        const float baseFreqB = std::pow(2, (int)(params[OCT_B_PARAM].getValue() - 3)) * multB;
+
+        // Single trigger for both voices
         float trigSrc = inputs[PITCH_TRIG_INPUT].getNormalVoltage(0.f);
         bool trigFlag = pitchTrig.process(rescale(trigSrc, 0.1f, 2.f, 0.f, 1.f));
+        if (trigFlag) pitchEnv.trigger();
+
         float_4 voiceANorm[4] = {};
         float_4 voiceBNorm[4] = {};
-        processOneVoice(0, lfoA, baseFreqA, rangeIdxA,
-                        FREQ_A_PARAM, TIMBRE_A_PARAM, TIMBRE_A_INPUT, VOCT_A_INPUT, EXPFM_A_INPUT, SYNC_A_INPUT, WAVE_A_PARAM, MORPH_A_INPUT,
-                        TZFM_A_AMT_PARAM, TZFM_A_AMT_INPUT,
-                        EXPFM_A_PARAM,
-                        pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
-                        enginesA, lastOutB, lastOutA,
-                        trigFlag,
-                        voiceANorm, args);
 
-        // Voice B controls
-        const int rangeIdxB = 0; // Full range
-        const bool lfoB = false;
-        const float multB = lfoB ? 1.0 : dsp::FREQ_C4;
-        const float baseFreqB = std::pow(2, (int)(params[OCT_B_PARAM].getValue() - 3)) * multB;
-        // Use same trigger for B
-        processOneVoice(0, lfoB, baseFreqB, rangeIdxB,
-                        FREQ_B_PARAM, TIMBRE_B_PARAM, TIMBRE_B_INPUT, VOCT_B_INPUT, EXPFM_B_INPUT, SYNC_B_INPUT, WAVE_B_PARAM, MORPH_B_INPUT,
-                        TZFM_B_AMT_PARAM, TZFM_B_AMT_INPUT,
-                        EXPFM_B_PARAM,
-                        pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
-                        enginesB, lastOutA, lastOutB,
-                        trigFlag,
-                        voiceBNorm, args);
+        // Stash previous-frame prefilter outputs for cross-mod so we can process A and B in parallel
+        float_4 prevA[4];
+        float_4 prevB[4];
+        for (int i = 0; i < 4; ++i) { prevA[i] = lastOutA[i]; prevB[i] = lastOutB[i]; }
+
+        // Configure pitch envelope once per block
+        pitchEnv.setDecayParam(params[PENV_DECAY_PARAM].getValue());
+        pitchEnv.setDecayCVVolts(inputs[PENV_DECAY_INPUT].getVoltage());
+        const float amtSigned = clamp((params[PENV_AMT_PARAM].getValue() - 0.5f) * 2.f
+                                      + inputs[PENV_AMT_INPUT].getVoltage() / 10.f,
+                                      -1.f, 1.f);
+
+        // Determine active channels for fused processing
+        const int channels = std::max({inputs[VOCT_A_INPUT].getChannels(), inputs[VOCT_B_INPUT].getChannels(), 1});
+        for (int c = 0; c < channels; c += 4) {
+            // Update pitch envelope once per SIMD group
+            float penvOut = pitchEnv.process(args.sampleTime); // 0..1
+            lastPitchEnv01 = penvOut;
+            const float penvVolts = penvOut * amtSigned * maxPitchEnvVolts;
+
+            // Voice A params
+            const float_4 timbreA = simd::clamp(params[TIMBRE_A_PARAM].getValue() + inputs[TIMBRE_A_INPUT].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            const float_4 expfmVoltsA = float_4(params[EXPFM_A_PARAM].getValue()) * prevB[c / 4];
+            const float_4 pitchA = inputs[VOCT_A_INPUT].getPolyVoltageSimd<float_4>(c) + expfmVoltsA + params[FREQ_A_PARAM].getValue() * range[rangeIdxA] + penvVolts;
+            const float_4 freqA = baseFreqA * simd::pow(2.f, pitchA);
+            // TZFM A: external if connected, otherwise normalized from previous-frame B scaled by amount
+            float_4 tzfmVoltA = inputs[EXPFM_A_INPUT].getPolyVoltageSimd<float_4>(c);
+            const bool extA = inputs[EXPFM_A_INPUT].isConnected();
+            const float_4 amtA = simd::clamp(float_4(params[TZFM_A_AMT_PARAM].getValue()) + inputs[TZFM_A_AMT_INPUT].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            const float_4 normA = amtA * prevB[c / 4];
+            tzfmVoltA = extA ? tzfmVoltA : normA;
+            float morphScalarA = clamp(params[WAVE_A_PARAM].getValue() + 3.f * inputs[MORPH_A_INPUT].getPolyVoltage(c) / 10.f, 0.f, 3.f);
+            int waveformSelA = (int) std::round(morphScalarA);
+
+            // Voice B params
+            const float_4 timbreB = simd::clamp(params[TIMBRE_B_PARAM].getValue() + inputs[TIMBRE_B_INPUT].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            const float_4 expfmVoltsB = float_4(params[EXPFM_B_PARAM].getValue()) * prevA[c / 4];
+            const float_4 pitchB = inputs[VOCT_B_INPUT].getPolyVoltageSimd<float_4>(c) + expfmVoltsB + params[FREQ_B_PARAM].getValue() * range[rangeIdxB] + penvVolts;
+            const float_4 freqB = baseFreqB * simd::pow(2.f, pitchB);
+            // TZFM B
+            float_4 tzfmVoltB = inputs[EXPFM_B_INPUT].getPolyVoltageSimd<float_4>(c);
+            const bool extB = inputs[EXPFM_B_INPUT].isConnected();
+            const float_4 amtB = simd::clamp(float_4(params[TZFM_B_AMT_PARAM].getValue()) + inputs[TZFM_B_AMT_INPUT].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            const float_4 normB = amtB * prevA[c / 4];
+            tzfmVoltB = extB ? tzfmVoltB : normB;
+            float morphScalarB = clamp(params[WAVE_B_PARAM].getValue() + 3.f * inputs[MORPH_B_INPUT].getPolyVoltage(c) / 10.f, 0.f, 3.f);
+            int waveformSelB = (int) std::round(morphScalarB);
+
+            // Process both voices in parallel
+            // Pack waveform selections into lanes
+            float_4 wfSelPacked = float_4((float)waveformSelA, (float)waveformSelB, 5.f, 5.f);
+            printf("wfSelPacked: %f, %f, %f, %f\n", wfSelPacked[0], wfSelPacked[1], wfSelPacked[2], wfSelPacked[3]);
+            // Pack control signals into lanes 0/1; lanes 2/3 unused
+            float_4 freqPacked = float_4(freqA[0], freqB[0], 0.f, 0.f);
+            float_4 timbrePacked = float_4(timbreA[0], timbreB[0], 0.f, 0.f);
+            float_4 tzfmPacked = float_4(tzfmVoltA[0], tzfmVoltB[0], 0.f, 0.f);
+            float_4 syncPacked = float_4(inputs[SYNC_A_INPUT].getPolyVoltageSimd<float_4>(c)[0], inputs[SYNC_B_INPUT].getPolyVoltageSimd<float_4>(c)[0], 0.f, 0.f);
+
+            // Single engine invocation using lanes 0/1 for A/B respectively (shared engine state lanes)
+            float_4 outPacked = enginesA[c / 4].process(args.sampleTime, lfoA, freqPacked, timbrePacked, tzfmPacked, syncPacked, wfSelPacked);
+
+            // Extract lanes to broadcast across SIMD for downstream processing
+            float_4 outA = float_4(outPacked[0], outPacked[0], outPacked[0], outPacked[0]);
+            float_4 outB = float_4(outPacked[1], outPacked[1], outPacked[1], outPacked[1]);
+
+            const float_4 gain = float_4(1.f);
+            const float_4 preA = 5.f * outA * gain;
+            const float_4 preB = 5.f * outB * gain;
+            lastOutA[c / 4] = preA;
+            lastOutB[c / 4] = preB;
+            voiceANorm[c / 4] = outA * gain;
+            voiceBNorm[c / 4] = outB * gain;
+        }
 
         // Global ladder filter: mix A and B normalized audio, process once, then output to single output
-        const int channels = std::max({inputs[VOCT_A_INPUT].getChannels(), inputs[VOCT_B_INPUT].getChannels(), 1});
         // Trigger global ladder env on the same trigger
         if (trigFlag) {
             ldrEnv.trigger();

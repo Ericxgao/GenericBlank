@@ -4,7 +4,6 @@ FLAGS +=
 
 SOURCES += src/plugin.cpp
 SOURCES += src/Blank.cpp
-SOURCES += src/PonyVCO.cpp
 SOURCES += src/DrumVoice.cpp
 
 DISTRIBUTABLES += res

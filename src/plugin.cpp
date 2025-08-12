@@ -8,7 +8,6 @@ void init(Plugin *p)
 
 	// Add modules here
 	p->addModel(modelBlank);
-    p->addModel(modelPonyVCO);
     p->addModel(modelDrumVoice);
 
 	// Any other plugin initialization may go here.

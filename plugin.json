@@ -24,15 +24,6 @@
       ]
     },
     {
-      "slug": "ponyvco",
-      "name": "PonyVCO",
-      "description": "Simple VCO with generic UI (knobs and CV inputs)",
-      "tags": [
-        "Oscillator",
-        "VCO"
-      ]
-    },
-    {
       "slug": "drumvoice",
       "name": "DrumVoice",
       "description": "Dual PonyVCO voice for drum synthesis",
