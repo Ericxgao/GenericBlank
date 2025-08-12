@@ -106,9 +106,9 @@ public:
             phase += deltaBasePhase + deltaFMPhase;
             phase -= simd::floor(phase);
 
+            float_4 out;
             if (waveformSel == 0) {
-                osBuffer[i] = sin2pi_pade_05_5_4(phase);
-                osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre));
+                out = sin2pi_pade_05_5_4(phase);
             } else {
                 float_4 phases[3];
                 phases[0] = phase - 2 * deltaBasePhase + simd::ifelse(phase < 2 * deltaBasePhase, 1.f, 0.f);
@@ -119,15 +119,13 @@ public:
                     case 1: {
                         const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase - 1.0);
                         const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
-                        osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre));
+                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
                         break;
                     }
                     case 2: {
                         const float_4 dpwOrder1 = 2 * phase - 1.0;
                         const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
-                        osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre));
+                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
                         break;
                     }
                     case 3: {
@@ -136,17 +134,16 @@ public:
                         float_4 saw = aliasSuppressedSaw(phases);
                         float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
                         float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
-                        osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        osBuffer[i] *= 0.3f; // loudness trim
+                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
                         break;
                     }
                     default: {
-                        osBuffer[i] = sin2pi_pade_05_5_4(phase);
-                        osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre));
+                        out = sin2pi_pade_05_5_4(phase);
                         break;
                     }
                 }
             }
+            osBuffer[i] = wavefolder(out, (1 - 0.85 * timbre));
         }
 
         return (oversamplingRatio > 1) ? oversampler.downsample() : oversampler.getOSBuffer()[0];
@@ -181,7 +178,7 @@ private:
         return (sawOffsetBuff[0] - 2.0 * sawOffsetBuff[1] + sawOffsetBuff[2]);
     }
     float_4 wavefolder(float_4 x, float_4 xt) {
-        return stage2.process(stage1.process(x, xt));
+        return stage1.process(x, xt);
     }
 
     chowdsp::VariableOversampling<6, float_4> oversampler;
