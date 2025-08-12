@@ -3,9 +3,36 @@
 #include "PercEnvelope.hpp"
 #include "RingModulator.hpp"
 #include "DriveStage.hpp"
-#include "LadderFilter.hpp"
+#include "CheapLadder.hpp"
 
 using simd::float_4;
+
+// Cheap ladder SIMD wrapper (4 scalar lanes)
+struct CheapLadderSIMD4 {
+    Ladder4 lanes[4];
+
+    void setSampleRate(float sr) {
+        for (int i = 0; i < 4; ++i) lanes[i].fs = sr;
+    }
+
+    // cutoffHz in Hz, resonance ~0..3, drive ~1..2 typical
+    inline float_4 process(float_4 x, float cutoffHz, float resonance, float drive,
+                           float kBassComp = 0.35f, float fbHPHz = 0.0f) {
+        alignas(16) float in[4];
+        alignas(16) float out[4];
+        x.store(in);
+        for (int i = 0; i < 4; ++i) {
+            out[i] = lanes[i].process(in[i], cutoffHz, resonance, drive, kBassComp, fbHPHz);
+        }
+        return float_4::load(out);
+    }
+
+    // Mono fast-path: process only lane 0 and return scalar
+    inline float processMono(float x, float cutoffHz, float resonance, float drive,
+                             float kBassComp = 0.35f, float fbHPHz = 0.0f) {
+        return lanes[0].process(x, cutoffHz, resonance, drive, kBassComp, fbHPHz);
+    }
+};
 
 struct DrumVoice : Module {
     enum ParamId {
@@ -85,7 +112,7 @@ struct DrumVoice : Module {
     const float maxPitchEnvVolts = 7.0f;
     RingModulatorSIMD4 ring;
     DriveStageSIMD4 drive;
-    LadderFilterSIMD4 ladder[4];
+    CheapLadderSIMD4 ladder[4];
 
     // Exposed envelope values (0..1) captured during processing for output jacks
     float lastPitchEnv01 = 0.f;
@@ -168,6 +195,7 @@ struct DrumVoice : Module {
             enginesB[i].oversamplingIndex = oversamplingIndex;
             enginesA[i].prepare(sampleRate);
             enginesB[i].prepare(sampleRate);
+            ladder[i].setSampleRate(sampleRate);
         }
         drive.reset();
     }
@@ -281,13 +309,44 @@ struct DrumVoice : Module {
         lastLdrEnv01 = ldrEnvOut01;
         float cutoff01 = params[LDR_CUTOFF_PARAM].getValue() + inputs[LDR_CUTOFF_INPUT].getNormalVoltage(0.f) / 10.f + ldrEnvOut01;
         cutoff01 = clamp(cutoff01, 0.f, 1.f);
-        float cutoffHz = 20.f * std::pow(2.f, cutoff01 * 10.f);
-        cutoffHz = clamp(cutoffHz, 1.f, args.sampleRate * 0.18f);
-        float res01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
-        res01 = clamp(res01, 0.f, 1.f);
-        float_4 resonance = simd::pow(simd::clamp(float_4(res01), 0.f, 1.f), 2) * 10.f;
+        // Wider cutoff mapping for stronger effect: ~5 Hz .. ~0.45*Nyquist
+        float cutoffHz = 5.f * std::pow(2.f, cutoff01 * 12.f);
+        cutoffHz = clamp(cutoffHz, 5.f, args.sampleRate * 0.45f);
+        // Map panel 0..1 to ladder resonance ~0..1.2 (stable, audible)
+        float resNorm01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
+        resNorm01 = clamp(resNorm01, 0.f, 1.f);
+        float ladderRes = 1.3f * resNorm01;
 
-        for (int c = 0; c < channels; c += 4) {
+        // Mono fast path: when channels == 1, avoid SIMD ladder and write scalar outputs
+        if (channels == 1) {
+            const simd::float_4 a = voiceANorm[0];
+            const simd::float_4 b = voiceBNorm[0];
+            const simd::float_4 ringed = ring.process(a, b, 1.0f);
+            const float mixA = clamp(params[MIX_A_PARAM].getValue(), 0.f, 1.f);
+            const float mixB = clamp(params[MIX_B_PARAM].getValue(), 0.f, 1.f);
+            const float mixRing = clamp(params[MIX_RING_PARAM].getValue(), 0.f, 1.f);
+            const simd::float_4 mixNormPreDrive = a * simd::float_4(mixA) + b * simd::float_4(mixB) + ringed * simd::float_4(mixRing);
+            const simd::float_4 driven = drive.process(mixNormPreDrive, args.sampleTime, params[DRIVE_PARAM].getValue());
+            alignas(16) float drivenArr[4];
+            alignas(16) float aArr[4];
+            alignas(16) float bArr[4];
+            alignas(16) float ringArr[4];
+            driven.store(drivenArr);
+            a.store(aArr);
+            b.store(bArr);
+            ringed.store(ringArr);
+            const float ladderDrive = 1.0f; // keep neutral; drive is handled pre-filter
+            const float filtered = ladder[0].processMono(drivenArr[0], cutoffHz, ladderRes, ladderDrive, /*kBassComp*/ 0.0f, /*fbHPHz*/ 0.0f);
+            outputs[MIX_OUTPUT].setVoltage(5.f * filtered);
+            outputs[OSC_A_OUTPUT].setVoltage(5.f * aArr[0]);
+            outputs[OSC_B_OUTPUT].setVoltage(5.f * bArr[0]);
+            outputs[RING_OUTPUT].setVoltage(5.f * ringArr[0]);
+            outputs[MIX_OUTPUT].setChannels(1);
+            outputs[OSC_A_OUTPUT].setChannels(1);
+            outputs[OSC_B_OUTPUT].setChannels(1);
+            outputs[RING_OUTPUT].setChannels(1);
+        }
+        else for (int c = 0; c < channels; c += 4) {
             const simd::float_4 a = voiceANorm[c / 4];
             const simd::float_4 b = voiceBNorm[c / 4];
             const simd::float_4 ringed = ring.process(a, b, 1.0f);
@@ -297,10 +356,10 @@ struct DrumVoice : Module {
             const simd::float_4 mixNormPreDrive = a * simd::float_4(mixA) + b * simd::float_4(mixB) + ringed * simd::float_4(mixRing);
             const simd::float_4 driven = drive.process(mixNormPreDrive, args.sampleTime, params[DRIVE_PARAM].getValue());
             const simd::float_4 mixNorm = driven;
-            ladder[c / 4].setCutoff(float_4(cutoffHz));
-            ladder[c / 4].setResonance(resonance);
-            ladder[c / 4].process(mixNorm, args.sampleTime);
-            const simd::float_4 filtered = ladder[c / 4].lowpass();
+            // Cheap ladder 4-pole lowpass
+            const float ladderDrive = 1.0f; // keep neutral; drive is handled pre-filter
+            // Disable bass compensation so cutoff has a strong audible effect
+            const simd::float_4 filtered = ladder[c / 4].process(mixNorm, cutoffHz, ladderRes, ladderDrive, /*kBassComp*/ 0.0f, /*fbHPHz*/ 0.0f);
             const simd::float_4 mixScaled = 5.f * filtered;
             const simd::float_4 aScaled = 5.f * a;
             const simd::float_4 bScaled = 5.f * b;
