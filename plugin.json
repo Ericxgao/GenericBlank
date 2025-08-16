@@ -1,5 +1,5 @@
 {
-  "slug": "drumvoice",
+  "slug": "electronic-communications",
   "name": "electronic communications",
   "version": "2.1.0",
   "license": "MIT",
@@ -22,6 +22,15 @@
         "Oscillator",
         "Drum",
         "VCO"
+      ]
+    },
+    {
+      "slug": "drumsequencer",
+      "name": "DrumSequencer",
+      "description": "Drum sequencer",
+      "tags": [
+        "Sequencer",
+        "Drum"
       ]
     }
   ]

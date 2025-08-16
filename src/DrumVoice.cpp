@@ -386,17 +386,17 @@ struct DrumVoiceWidget : ModuleWidget {
         };
 
         auto addTinyLabelAtMM = [&](Vec mmCenter, const char* txt, float dyMm) {
-            // Vec centerPx = mm2px(Vec(mmCenter.x, mmCenter.y + dyMm));
-            // auto* lab = createWidget<TinyLabel>(centerPx);
-            // // Set size and reposition so the label is centered at the desired location
-            // lab->box.size = Vec(LABEL_BOX_WIDTH, LABEL_BOX_HEIGHT);
-            // Vec half = Vec(lab->box.size.x * 0.5f, lab->box.size.y * 0.5f);
-            // lab->box.pos = centerPx.minus(half);
-            // std::string s(txt ? txt : "");
-            // if ((int)s.size() > LABEL_MAX_CHARS) s = s.substr(0, LABEL_MAX_CHARS);
-            // lab->text = s;
-            // lab->fontSize = LABEL_FONT_SIZE;
-            // addChild(lab);
+            Vec centerPx = mm2px(Vec(mmCenter.x, mmCenter.y + dyMm));
+            auto* lab = createWidget<TinyLabel>(centerPx);
+            // Set size and reposition so the label is centered at the desired location
+            lab->box.size = Vec(LABEL_BOX_WIDTH, LABEL_BOX_HEIGHT);
+            Vec half = Vec(lab->box.size.x * 0.5f, lab->box.size.y * 0.5f);
+            lab->box.pos = centerPx.minus(half);
+            std::string s(txt ? txt : "");
+            if ((int)s.size() > LABEL_MAX_CHARS) s = s.substr(0, LABEL_MAX_CHARS);
+            lab->text = s;
+            lab->fontSize = LABEL_FONT_SIZE;
+            addChild(lab);
         };
 
         // Voice A (left column) — compact 2x3 grid of small knobs in the upper area

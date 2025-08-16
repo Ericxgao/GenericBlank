@@ -6,6 +6,7 @@ SOURCES += src/plugin.cpp
 SOURCES += src/Blank.cpp
 SOURCES += src/PonyVCO.cpp
 SOURCES += src/DrumVoice.cpp
+SOURCES += src/DrumSequencer.cpp
 
 DISTRIBUTABLES += res
 # DISTRIBUTABLES += presets
