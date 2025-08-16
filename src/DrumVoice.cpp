@@ -3,11 +3,9 @@
 #include "PercEnvelope.hpp"
 #include "RingModulator.hpp"
 #include "DriveStage.hpp"
-#include "CheapLadder.hpp"
+#include "LadderFilter.hpp"
 
 using simd::float_4;
-
-// (SIMD ladder wrapper removed; using scalar Ladder4 for mono path)
 
 struct DrumVoice : Module {
     enum ParamId {
@@ -74,12 +72,11 @@ struct DrumVoice : Module {
     enum LightId { LIGHTS_LEN };
 
     float range[4] = {8.f, 1.f, 1.f / 12.f, 10.f};
-    PonyVCOEngine engineA;
-    PonyVCOEngine engineB;
+    PonyVCOEngine enginesA[4];
+    PonyVCOEngine enginesB[4];
     int oversamplingIndex = 1;
-    // Last pre-filter outputs in volts (±5V) for cross-mod
-    float lastOutA_V = 0.f;
-    float lastOutB_V = 0.f;
+    float_4 lastOutA[4] = {};
+    float_4 lastOutB[4] = {};
     // Single pitch envelope (shared)
     PercEnvelope pitchEnv;
         // Global VCA envelope
@@ -88,7 +85,7 @@ struct DrumVoice : Module {
     const float maxPitchEnvVolts = 7.0f;
     RingModulatorSIMD4 ring;
     DriveStageSIMD4 drive;
-    Ladder4 ladder;
+    LadderFilterSIMD4 ladder[4];
 
     // Exposed envelope values (0..1) captured during processing for output jacks
     float lastPitchEnv01 = 0.f;
@@ -166,69 +163,71 @@ struct DrumVoice : Module {
 
     void onSampleRateChange() override {
         float sampleRate = APP->engine->getSampleRate();
-        engineA.oversamplingIndex = oversamplingIndex;
-        engineB.oversamplingIndex = oversamplingIndex;
-        engineA.prepare(sampleRate);
-        engineB.prepare(sampleRate);
-        ladder.fs = sampleRate;
+        for (int i = 0; i < 4; ++i) {
+            enginesA[i].oversamplingIndex = oversamplingIndex;
+            enginesB[i].oversamplingIndex = oversamplingIndex;
+            enginesA[i].prepare(sampleRate);
+            enginesB[i].prepare(sampleRate);
+        }
         drive.reset();
     }
 
-    void processVoiceMono(
-        bool lfoMode, float baseFreq, int rangeIndex,
-        int freqParam, int timbreParam, int timbreIn, int voctIn, int tzfmIn, int syncIn, int morphParam, int morphIn,
-        int tzfmAmtParam, int tzfmAmtIn,
-        int expfmParam,
-        PercEnvelope& penv, int penvDecayParam, int penvAmtParam, int penvDecayIn, int penvAmtIn,
-        PonyVCOEngine& engine, float lastOutOtherVolts, float& lastOutSelfVolts,
-        bool pitchTrigFired,
-        float_4& voiceNormOut,
-        const ProcessArgs& args) {
+    void processOneVoice(int startCh, bool lfoMode, float baseFreq, int rangeIndex,
+                         int freqParam, int timbreParam, int timbreIn, int voctIn, int tzfmIn, int syncIn, int morphParam, int morphIn,
+                          int tzfmAmtParam, int tzfmAmtIn,
+                          int expfmParam,
+                         PercEnvelope& penv, int penvDecayParam, int penvAmtParam, int penvDecayIn, int penvAmtIn,
+                         PonyVCOEngine* engines, float_4* lastOutReadOther, float_4* lastOutWriteSelf,
+                         bool pitchTrigFired,
+                         float_4* voiceNormOut, const ProcessArgs& args) {
+
+        const int channels = 1;
+        float_4* dummy = nullptr; (void)dummy; // suppress warnings if unused
 
         if (pitchTrigFired) penv.trigger();
+        for (int c = startCh; c < channels; c += 4) {
+            const float_4 timbre = simd::clamp(params[timbreParam].getValue() + inputs[timbreIn].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            // Pitch: base V/Oct + panel offset + pitch envelope in volts
+            // Update pitch envelope once per SIMD group
+            // triggering handled per voice in process()
+            penv.setDecayParam(params[penvDecayParam].getValue());
+            penv.setDecayCVVolts(inputs[penvDecayIn].getVoltage());
+            const float amtSigned = clamp((params[penvAmtParam].getValue() - 0.5f) * 2.f
+                                           + inputs[penvAmtIn].getVoltage() / 10.f,
+                                           -1.f, 1.f);
+            float penvOut = penv.process(args.sampleTime); // 0..1
+            lastPitchEnv01 = penvOut;
+            // Center (0) = no pitch modulation; below center sweeps down, above center sweeps up
+            const float penvVolts = penvOut * amtSigned * maxPitchEnvVolts;
+            const float_4 expfmVolts = float_4(params[expfmParam].getValue()) * lastOutReadOther[c / 4];
+            const float_4 pitch = inputs[voctIn].getPolyVoltageSimd<float_4>(c) + expfmVolts + params[freqParam].getValue() * range[rangeIndex] + penvVolts;
+            const float_4 freq = baseFreq * simd::pow(2.f, pitch);
+            // Calculate normalized TZFM: external TZFM if connected, otherwise from the other voice output scaled by amount
+            float_4 tzfmVoltage = inputs[tzfmIn].getPolyVoltageSimd<float_4>(c);
+            const bool extConnected = inputs[tzfmIn].isConnected();
+            const float_4 amt = simd::clamp(float_4(params[tzfmAmtParam].getValue()) + inputs[tzfmAmtIn].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
+            const float_4 normed = amt * lastOutReadOther[c / 4];
+            tzfmVoltage = extConnected ? tzfmVoltage : normed;
+            // Discrete waveform selection: quantize param+CV to 0..3 and use single selection for this SIMD group
+            float morphScalar = clamp(params[morphParam].getValue() + 3.f * inputs[morphIn].getPolyVoltage(c) / 10.f, 0.f, 3.f);
+            int waveformSel = (int) std::round(morphScalar);
 
-        const float timbreScalar = clamp(params[timbreParam].getValue() + inputs[timbreIn].getVoltage() / 10.f, 0.f, 1.f);
-        const float_4 timbre = float_4(timbreScalar);
+            float_4 out = engines[c / 4].process(
+                args.sampleTime,
+                lfoMode,
+                freq,
+                timbre,
+                tzfmVoltage,
+                inputs[syncIn].getPolyVoltageSimd<float_4>(c),
+                waveformSel
+            );
 
-        penv.setDecayParam(params[penvDecayParam].getValue());
-        penv.setDecayCVVolts(inputs[penvDecayIn].getVoltage());
-        const float amtSigned = clamp((params[penvAmtParam].getValue() - 0.5f) * 2.f
-                                      + inputs[penvAmtIn].getVoltage() / 10.f,
-                                      -1.f, 1.f);
-        float penvOut = penv.process(args.sampleTime); // 0..1
-        lastPitchEnv01 = penvOut;
-        const float penvVolts = penvOut * amtSigned * maxPitchEnvVolts;
-
-        const float expIdx = params[expfmParam].getValue();
-
-        const float voct = inputs[voctIn].getVoltage();
-        const float_4 pitch = float_4(voct + expIdx * lastOutOtherVolts + params[freqParam].getValue() * range[rangeIndex] + penvVolts);
-        const float_4 freq = float_4(baseFreq) * simd::pow(2.f, pitch);
-
-        float tzfmVoltageScalar = inputs[tzfmIn].getVoltage();
-        const bool extConnected = inputs[tzfmIn].isConnected();
-        const float amtScalar = clamp(params[tzfmAmtParam].getValue() + inputs[tzfmAmtIn].getVoltage() / 10.f, 0.f, 1.f);
-        const float normedScalar = amtScalar * lastOutOtherVolts;
-        const float_4 tzfmVoltage = float_4(extConnected ? tzfmVoltageScalar : normedScalar);
-
-        float morphScalar = clamp(params[morphParam].getValue() + 3.f * inputs[morphIn].getVoltage() / 10.f, 0.f, 3.f);
-        int waveformSel = (int) std::round(morphScalar);
-
-        float_4 out = engine.process(
-            args.sampleTime,
-            lfoMode,
-            freq,
-            timbre,
-            tzfmVoltage,
-            float_4(inputs[syncIn].getVoltage()),
-            waveformSel
-        );
-
-        const float_4 gain = float_4(1.f);
-        voiceNormOut = out * gain; // normalized ±1 per voice
-        alignas(16) float lanes[4];
-        (voiceNormOut * float_4(5.f)).store(lanes);
-        lastOutSelfVolts = lanes[0];
+            const float_4 gain = float_4(1.f);
+            const float_4 preFilterScaled = 5.f * out * gain; // for cross-normalization
+            lastOutWriteSelf[c / 4] = preFilterScaled;
+            voiceNormOut[c / 4] = out * gain; // normalized ±1 per voice
+        }
+        // no output written here
     }
 
     void process(const ProcessArgs& args) override {
@@ -240,18 +239,16 @@ struct DrumVoice : Module {
         // Compute single trigger
         float trigSrc = inputs[PITCH_TRIG_INPUT].getNormalVoltage(0.f);
         bool trigFlag = pitchTrig.process(rescale(trigSrc, 0.1f, 2.f, 0.f, 1.f));
-        float_4 voiceANorm = float_4(0.f);
-        float_4 voiceBNorm = float_4(0.f);
-        processVoiceMono(
-            lfoA, baseFreqA, rangeIdxA,
-            FREQ_A_PARAM, TIMBRE_A_PARAM, TIMBRE_A_INPUT, VOCT_A_INPUT, EXPFM_A_INPUT, SYNC_A_INPUT, WAVE_A_PARAM, MORPH_A_INPUT,
-            TZFM_A_AMT_PARAM, TZFM_A_AMT_INPUT,
-            EXPFM_A_PARAM,
-            pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
-            engineA, lastOutB_V, lastOutA_V,
-            trigFlag,
-            voiceANorm,
-            args);
+        float_4 voiceANorm[4] = {};
+        float_4 voiceBNorm[4] = {};
+        processOneVoice(0, lfoA, baseFreqA, rangeIdxA,
+                        FREQ_A_PARAM, TIMBRE_A_PARAM, TIMBRE_A_INPUT, VOCT_A_INPUT, EXPFM_A_INPUT, SYNC_A_INPUT, WAVE_A_PARAM, MORPH_A_INPUT,
+                        TZFM_A_AMT_PARAM, TZFM_A_AMT_INPUT,
+                        EXPFM_A_PARAM,
+                        pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
+                        enginesA, lastOutB, lastOutA,
+                        trigFlag,
+                        voiceANorm, args);
 
         // Voice B controls
         const int rangeIdxB = 0; // Full range
@@ -259,16 +256,14 @@ struct DrumVoice : Module {
         const float multB = lfoB ? 1.0 : dsp::FREQ_C4;
         const float baseFreqB = std::pow(2, (int)(params[OCT_B_PARAM].getValue() - 3)) * multB;
         // Use same trigger for B
-        processVoiceMono(
-            lfoB, baseFreqB, rangeIdxB,
-            FREQ_B_PARAM, TIMBRE_B_PARAM, TIMBRE_B_INPUT, VOCT_B_INPUT, EXPFM_B_INPUT, SYNC_B_INPUT, WAVE_B_PARAM, MORPH_B_INPUT,
-            TZFM_B_AMT_PARAM, TZFM_B_AMT_INPUT,
-            EXPFM_B_PARAM,
-            pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
-            engineB, lastOutA_V, lastOutB_V,
-            trigFlag,
-            voiceBNorm,
-            args);
+        processOneVoice(0, lfoB, baseFreqB, rangeIdxB,
+                        FREQ_B_PARAM, TIMBRE_B_PARAM, TIMBRE_B_INPUT, VOCT_B_INPUT, EXPFM_B_INPUT, SYNC_B_INPUT, WAVE_B_PARAM, MORPH_B_INPUT,
+                        TZFM_B_AMT_PARAM, TZFM_B_AMT_INPUT,
+                        EXPFM_B_PARAM,
+                        pitchEnv, PENV_DECAY_PARAM, PENV_AMT_PARAM, PENV_DECAY_INPUT, PENV_AMT_INPUT,
+                        enginesB, lastOutA, lastOutB,
+                        trigFlag,
+                        voiceBNorm, args);
 
         // Global ladder filter: mix A and B normalized audio, process once, then output to single output
         const int channels = 1;
@@ -286,41 +281,39 @@ struct DrumVoice : Module {
         lastLdrEnv01 = ldrEnvOut01;
         float cutoff01 = params[LDR_CUTOFF_PARAM].getValue() + inputs[LDR_CUTOFF_INPUT].getNormalVoltage(0.f) / 10.f + ldrEnvOut01;
         cutoff01 = clamp(cutoff01, 0.f, 1.f);
-        // Wider cutoff mapping for stronger effect: ~5 Hz .. ~0.45*Nyquist
-        float cutoffHz = 5.f * std::pow(2.f, cutoff01 * 12.f);
-        cutoffHz = clamp(cutoffHz, 5.f, args.sampleRate * 0.45f);
-        // Map panel 0..1 to ladder resonance ~0..1.2 (stable, audible)
-        float resNorm01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
-        resNorm01 = clamp(resNorm01, 0.f, 1.f);
-        float ladderRes = 1.3f * resNorm01;
+        float cutoffHz = 20.f * std::pow(2.f, cutoff01 * 10.f);
+        cutoffHz = clamp(cutoffHz, 1.f, args.sampleRate * 0.18f);
+        float res01 = params[LDR_RES_PARAM].getValue() + inputs[LDR_RES_INPUT].getNormalVoltage(0.f) / 10.f;
+        res01 = clamp(res01, 0.f, 1.f);
+        float_4 resonance = simd::pow(simd::clamp(float_4(res01), 0.f, 1.f), 2) * 10.f;
 
-        // Mono processing
-        simd::float_4 a = voiceANorm;
-        simd::float_4 b = voiceBNorm;
-        simd::float_4 ringed = ring.process(a, b, 1.0f);
-        const float mixA = clamp(params[MIX_A_PARAM].getValue(), 0.f, 1.f);
-        const float mixB = clamp(params[MIX_B_PARAM].getValue(), 0.f, 1.f);
-        const float mixRing = clamp(params[MIX_RING_PARAM].getValue(), 0.f, 1.f);
-        simd::float_4 mixNormPreDrive = a * simd::float_4(mixA) + b * simd::float_4(mixB) + ringed * simd::float_4(mixRing);
-        simd::float_4 driven = drive.process(mixNormPreDrive, args.sampleTime, params[DRIVE_PARAM].getValue());
-        alignas(16) float drivenArr[4];
-        alignas(16) float aArr[4];
-        alignas(16) float bArr[4];
-        alignas(16) float ringArr[4];
-        (driven).store(drivenArr);
-        (a).store(aArr);
-        (b).store(bArr);
-        (ringed).store(ringArr);
-        const float ladderDrive = 1.0f;
-        const float filtered = ladder.process(drivenArr[0], cutoffHz, ladderRes, ladderDrive, /*kBassComp*/ 0.0f, /*fbHPHz*/ 0.0f);
-        outputs[MIX_OUTPUT].setVoltage(5.f * filtered);
-        outputs[OSC_A_OUTPUT].setVoltage(5.f * aArr[0]);
-        outputs[OSC_B_OUTPUT].setVoltage(5.f * bArr[0]);
-        outputs[RING_OUTPUT].setVoltage(5.f * ringArr[0]);
-        outputs[MIX_OUTPUT].setChannels(1);
-        outputs[OSC_A_OUTPUT].setChannels(1);
-        outputs[OSC_B_OUTPUT].setChannels(1);
-        outputs[RING_OUTPUT].setChannels(1);
+        for (int c = 0; c < channels; c += 4) {
+            const simd::float_4 a = voiceANorm[c / 4];
+            const simd::float_4 b = voiceBNorm[c / 4];
+            const simd::float_4 ringed = ring.process(a, b, 1.0f);
+            const float mixA = clamp(params[MIX_A_PARAM].getValue(), 0.f, 1.f);
+            const float mixB = clamp(params[MIX_B_PARAM].getValue(), 0.f, 1.f);
+            const float mixRing = clamp(params[MIX_RING_PARAM].getValue(), 0.f, 1.f);
+            const simd::float_4 mixNormPreDrive = a * simd::float_4(mixA) + b * simd::float_4(mixB) + ringed * simd::float_4(mixRing);
+            const simd::float_4 driven = drive.process(mixNormPreDrive, args.sampleTime, params[DRIVE_PARAM].getValue());
+            const simd::float_4 mixNorm = driven;
+            ladder[c / 4].setCutoff(float_4(cutoffHz));
+            ladder[c / 4].setResonance(resonance);
+            ladder[c / 4].process(mixNorm, args.sampleTime);
+            const simd::float_4 filtered = ladder[c / 4].lowpass();
+            const simd::float_4 mixScaled = 5.f * filtered;
+            const simd::float_4 aScaled = 5.f * a;
+            const simd::float_4 bScaled = 5.f * b;
+            const simd::float_4 ringScaled = 5.f * ringed;
+            outputs[MIX_OUTPUT].setVoltageSimd(mixScaled, c);
+            outputs[OSC_A_OUTPUT].setVoltageSimd(aScaled, c);
+            outputs[OSC_B_OUTPUT].setVoltageSimd(bScaled, c);
+            outputs[RING_OUTPUT].setVoltageSimd(ringScaled, c);
+        }
+        outputs[MIX_OUTPUT].setChannels(channels);
+        outputs[OSC_A_OUTPUT].setChannels(channels);
+        outputs[OSC_B_OUTPUT].setChannels(channels);
+        outputs[RING_OUTPUT].setChannels(channels);
         // Envelope monitor outputs (mono 0..10V)
         outputs[PENV_OUTPUT].setVoltage(10.f * clamp(lastPitchEnv01, 0.f, 1.f));
         outputs[PENV_OUTPUT].setChannels(1);
@@ -393,17 +386,17 @@ struct DrumVoiceWidget : ModuleWidget {
         };
 
         auto addTinyLabelAtMM = [&](Vec mmCenter, const char* txt, float dyMm) {
-            Vec centerPx = mm2px(Vec(mmCenter.x, mmCenter.y + dyMm));
-            auto* lab = createWidget<TinyLabel>(centerPx);
-            // Set size and reposition so the label is centered at the desired location
-            lab->box.size = Vec(LABEL_BOX_WIDTH, LABEL_BOX_HEIGHT);
-            Vec half = Vec(lab->box.size.x * 0.5f, lab->box.size.y * 0.5f);
-            lab->box.pos = centerPx.minus(half);
-            std::string s(txt ? txt : "");
-            if ((int)s.size() > LABEL_MAX_CHARS) s = s.substr(0, LABEL_MAX_CHARS);
-            lab->text = s;
-            lab->fontSize = LABEL_FONT_SIZE;
-            addChild(lab);
+            // Vec centerPx = mm2px(Vec(mmCenter.x, mmCenter.y + dyMm));
+            // auto* lab = createWidget<TinyLabel>(centerPx);
+            // // Set size and reposition so the label is centered at the desired location
+            // lab->box.size = Vec(LABEL_BOX_WIDTH, LABEL_BOX_HEIGHT);
+            // Vec half = Vec(lab->box.size.x * 0.5f, lab->box.size.y * 0.5f);
+            // lab->box.pos = centerPx.minus(half);
+            // std::string s(txt ? txt : "");
+            // if ((int)s.size() > LABEL_MAX_CHARS) s = s.substr(0, LABEL_MAX_CHARS);
+            // lab->text = s;
+            // lab->fontSize = LABEL_FONT_SIZE;
+            // addChild(lab);
         };
 
         // Voice A (left column) — compact 2x3 grid of small knobs in the upper area

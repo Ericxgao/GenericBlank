@@ -109,6 +109,7 @@ public:
             float_4 out;
             if (waveformSel == 0) {
                 out = sin2pi_pade_05_5_4(phase);
+                out = wavefolder(out, (1 - 0.85 * timbre));
             } else {
                 float_4 phases[3];
                 phases[0] = phase - 2 * deltaBasePhase + simd::ifelse(phase < 2 * deltaBasePhase, 1.f, 0.f);
@@ -120,12 +121,14 @@ public:
                         const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase - 1.0);
                         const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
                         out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                        out = wavefolder(out, (1 - 0.85 * timbre));
                         break;
                     }
                     case 2: {
                         const float_4 dpwOrder1 = 2 * phase - 1.0;
                         const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
                         out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                        out = wavefolder(out, (1 - 0.85 * timbre));
                         break;
                     }
                     case 3: {
@@ -139,11 +142,12 @@ public:
                     }
                     default: {
                         out = sin2pi_pade_05_5_4(phase);
+                        out = wavefolder(out, (1 - 0.85 * timbre));
                         break;
                     }
                 }
             }
-            osBuffer[i] = wavefolder(out, (1 - 0.85 * timbre));
+            osBuffer[i] = out;
         }
 
         return (oversamplingRatio > 1) ? oversampler.downsample() : oversampler.getOSBuffer()[0];

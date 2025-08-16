@@ -22,8 +22,6 @@ struct TwoPoleSVF {
     // State (Simper eq. integrator states)
     float ic1eq = 0.f;
     float ic2eq = 0.f;
-    // Extra emphasis mix (adds bandpass into lowpass for stronger resonance peak)
-    float emphasis = 0.f;
 
     void reset() {
         ic1eq = 0.f;
@@ -42,9 +40,9 @@ struct TwoPoleSVF {
         a1 = 1.f / (1.f + g * (g + k));
     }
 
-    // Q in [0.25, 1000], where high values will self-oscillate
+    // Q in [0.25, 20], where Q=0.5 is very damped, Q~10 is near self-osc
     void setQ(float Q) {
-        Q = math::clamp(Q, 0.25f, 1000.f);
+        Q = math::clamp(Q, 0.25f, 20.f);
         k = 1.f / Q;
         // a1 depends on k; recompute with current g
         a1 = 1.f / (1.f + g * (g + k));
@@ -53,12 +51,9 @@ struct TwoPoleSVF {
     // Resonance in [0,1] mapped to a much higher Q range for strong resonance
     void setResonance01(float r01) {
         r01 = math::clamp(r01, 0.f, 1.f);
-        // Steep curve near the top; push to extreme resonance at max
-        const float r2 = r01 * r01;
-        const float r6 = r2 * r2 * r2; // r01^6
-        const float Q = 0.5f + r6 * 1000.f; // Q ≈ 0.5 .. 1000.5
-        // Emphasis grows faster than Q so the peak is clearly audible
-        emphasis = r2 * 20.0f; // 0..20x BP added to LP
+        // Steep curve near the top; allow near/self-oscillation at max
+        const float r4 = r01 * r01 * r01 * r01;
+        const float Q = 0.5f + r4 * 40.f; // Q ≈ 0.5 .. 40.5
         setQ(Q);
     }
 
@@ -85,8 +80,7 @@ struct TwoPoleSVF {
         ic1eq = bp + v2;
         ic2eq = lp + v3;
 
-        // Lowpass with extra bandpass emphasis
-        return lp + emphasis * bp;
+        return lp;
     }
 };
 
@@ -125,67 +119,6 @@ struct TwoPoleSVFSIMD4 {
     }
 
     // Process a SIMD vector; returns low-pass
-    inline float_4 process(float_4 x) {
-        alignas(16) float in[4];
-        alignas(16) float out[4];
-        x.store(in);
-        for (int i = 0; i < 4; ++i) out[i] = lanes[i].process(in[i]);
-        return float_4::load(out);
-    }
-};
-
-// Cascade two 2-pole SVFs to approximate a 4-pole lowpass with stronger resonance peak
-struct TwoPoleSVF2x {
-    TwoPoleSVF f1;
-    TwoPoleSVF f2;
-
-    void reset() {
-        f1.reset();
-        f2.reset();
-    }
-    void setSampleRate(float sr) {
-        f1.setSampleRate(sr);
-        f2.setSampleRate(sr);
-    }
-    void setCutoff(float cutoffHz) {
-        f1.setCutoff(cutoffHz);
-        f2.setCutoff(cutoffHz);
-    }
-    void setResonance01(float r01) {
-        // Apply the same resonance to both stages
-        f1.setResonance01(r01);
-        f2.setResonance01(r01);
-    }
-    inline float process(float x) {
-        return f2.process(f1.process(x));
-    }
-};
-
-struct TwoPoleSVF2xSIMD4 {
-    TwoPoleSVF2x lanes[4];
-
-    void reset() {
-        for (int i = 0; i < 4; ++i) lanes[i].reset();
-    }
-    void setSampleRate(float sr) {
-        for (int i = 0; i < 4; ++i) lanes[i].setSampleRate(sr);
-    }
-    void setCutoff(float cutoffHz) {
-        for (int i = 0; i < 4; ++i) lanes[i].setCutoff(cutoffHz);
-    }
-    void setCutoff(float_4 cutoffHz) {
-        alignas(16) float c[4];
-        cutoffHz.store(c);
-        for (int i = 0; i < 4; ++i) lanes[i].setCutoff(c[i]);
-    }
-    void setResonance01(float r01) {
-        for (int i = 0; i < 4; ++i) lanes[i].setResonance01(r01);
-    }
-    void setResonance01(float_4 r01) {
-        alignas(16) float r[4];
-        r01.store(r);
-        for (int i = 0; i < 4; ++i) lanes[i].setResonance01(r[i]);
-    }
     inline float_4 process(float_4 x) {
         alignas(16) float in[4];
         alignas(16) float out[4];
