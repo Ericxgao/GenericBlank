@@ -45,7 +45,7 @@ struct LadderFilter {
 
     // Process one sample (scalar or SIMD). dt is host sampleTime
     void process(T in, T dt) {
-        dsp::stepRK2(T(0), dt, state, 4, [&](T t, const T x[], T dxdt[]) {
+        dsp::stepRK4(T(0), dt, state, 4, [&](T t, const T x[], T dxdt[]) {
             T inp_t = lf_crossfade(input, in, t / dt);
 
             // Default bass-resonance compensation: boost input as resonance rises,
@@ -91,5 +91,4 @@ struct LadderFilterSIMD4 {
     float_4 lowpass() const { return core.lowpass(); }
     float_4 highpass() const { return core.highpass(); }
 };
-
 
