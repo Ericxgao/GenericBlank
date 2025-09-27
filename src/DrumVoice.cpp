@@ -212,9 +212,8 @@ struct DrumVoice : Module {
             const float_4 amt = simd::clamp(float_4(params[tzfmAmtParam].getValue()) + inputs[tzfmAmtIn].getPolyVoltageSimd<float_4>(c) / 10.f, 0.f, 1.f);
             const float_4 normed = amt * lastOutReadOther[c / 4];
             tzfmVoltage = extConnected ? tzfmVoltage : normed;
-            // Discrete waveform selection: quantize param+CV to 0..3 and use single selection for this SIMD group
+            // Continuous morph 0..3 from knob + CV (3V span)
             float morphScalar = clamp(params[morphParam].getValue() + 3.f * inputs[morphIn].getPolyVoltage(c) / 10.f, 0.f, 3.f);
-            int waveformSel = (int) std::round(morphScalar);
 
             float_4 out = engines[c / 4].process(
                 args.sampleTime,
@@ -223,7 +222,7 @@ struct DrumVoice : Module {
                 timbre,
                 tzfmVoltage,
                 inputs[syncIn].getPolyVoltageSimd<float_4>(c),
-                waveformSel
+                morphScalar
             );
 
             const float_4 gain = float_4(1.f);

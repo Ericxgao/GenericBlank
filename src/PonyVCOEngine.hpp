@@ -75,7 +75,7 @@ public:
                     float_4 timbre,
                     float_4 tzfmVoltage,
                     float_4 syncVoltage,
-                    int waveformSel) {
+                    float_4 morph) {
 
         const int oversamplingRatio = lfoMode ? 1 : oversampler.getOversamplingRatio();
 
@@ -91,63 +91,105 @@ public:
 
         float_4 pw = timbre;
         if (limitPW) pw = clamp(pw, 0.05, 0.95);
-        const float_4 pulseDCOffset = (!removePulseDC) * 2.f * (0.5f - pw);
+        
 
-        // Sync: sine uses 0.25 offset (cos), others reset to 0
+        // Sync
+        morph = simd::clamp(morph, 0.f, 3.f);
+        const float_4 resetPhase = simd::ifelse(morph < 1.0f, 0.25f, 0.f);
         const float_4 syncMask = syncTrigger.process(syncVoltage);
-        if (waveformSel == 0) {
-            phase = simd::ifelse(syncMask, 0.25f, phase);
-        } else {
-            phase = simd::ifelse(syncMask, 0.f, phase);
-        }
+        phase = simd::ifelse(syncMask, resetPhase, phase);
 
         float_4* osBuffer = oversampler.getOSBuffer();
         for (int i = 0; i < oversamplingRatio; ++i) {
             phase += deltaBasePhase + deltaFMPhase;
             phase -= simd::floor(phase);
 
-            float_4 out;
-            if (waveformSel == 0) {
-                out = sin2pi_pade_05_5_4(phase);
-                out = wavefolder(out, (1 - 0.85 * timbre));
-            } else {
-                float_4 phases[3];
-                phases[0] = phase - 2 * deltaBasePhase + simd::ifelse(phase < 2 * deltaBasePhase, 1.f, 0.f);
-                phases[1] = phase - deltaBasePhase + simd::ifelse(phase < deltaBasePhase, 1.f, 0.f);
-                phases[2] = phase;
+            float_4 phases[3];
+            phases[0] = phase - 2 * deltaBasePhase + simd::ifelse(phase < 2 * deltaBasePhase, 1.f, 0.f);
+            phases[1] = phase - deltaBasePhase + simd::ifelse(phase < deltaBasePhase, 1.f, 0.f);
+            phases[2] = phase;
 
-                switch (waveformSel) {
-                    case 1: {
-                        const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase - 1.0);
-                        const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
-                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        out = wavefolder(out, (1 - 0.85 * timbre));
-                        break;
-                    }
-                    case 2: {
-                        const float_4 dpwOrder1 = 2 * phase - 1.0;
-                        const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
-                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        out = wavefolder(out, (1 - 0.85 * timbre));
-                        break;
-                    }
-                    case 3: {
-                        float_4 dpwOrder1 = simd::ifelse(phase < 1. - pw, +1.0, -1.0);
-                        dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pw) : 0.f;
-                        float_4 saw = aliasSuppressedSaw(phases);
-                        float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
-                        float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
-                        out = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                        break;
-                    }
-                    default: {
-                        out = sin2pi_pade_05_5_4(phase);
-                        out = wavefolder(out, (1 - 0.85 * timbre));
-                        break;
-                    }
-                }
+            // Segmented equal-power morph weights (PVCO-style)
+            // k in [0,1]: segments Sine->Tri, Tri->Pulse, Pulse->Saw with small detents
+            const float_4 k = simd::clamp(morph * (1.0f / 3.0f), 0.0f, 1.0f);
+            const float_4 oneThird = 1.0f / 3.0f;
+            const float_4 twoThird = 2.0f / 3.0f;
+            const float_4 seg1 = (k < oneThird);
+            const float_4 seg2 = (k >= oneThird) & (k < twoThird);
+            const float_4 seg3 = (k >= twoThird);
+            const float_4 det = 0.02f;
+            float_4 t1 = simd::clamp(k * 3.0f, 0.0f, 1.0f);
+            t1 = simd::ifelse(t1 < det, 0.0f, simd::ifelse(t1 > (1.0f - det), 1.0f, t1));
+            float_4 t2 = simd::clamp((k - oneThird) * 3.0f, 0.0f, 1.0f);
+            t2 = simd::ifelse(t2 < det, 0.0f, simd::ifelse(t2 > (1.0f - det), 1.0f, t2));
+            float_4 t3 = simd::clamp((k - twoThird) * 3.0f, 0.0f, 1.0f);
+            t3 = simd::ifelse(t3 < det, 0.0f, simd::ifelse(t3 > (1.0f - det), 1.0f, t3));
+            const float_4 wA1 = simd::sqrt(1.0f - t1);
+            const float_4 wB1 = simd::sqrt(t1);
+            const float_4 wA2 = simd::sqrt(1.0f - t2);
+            const float_4 wB2 = simd::sqrt(t2);
+            const float_4 wA3 = simd::sqrt(1.0f - t3);
+            const float_4 wB3 = simd::sqrt(t3);
+            const float_4 wSin   = simd::ifelse(seg1, wA1, 0.0f);
+            const float_4 wTri   = simd::ifelse(seg1, wB1, simd::ifelse(seg2, wA2, 0.0f));
+            const float_4 wPulse = simd::ifelse(seg2, wB2, simd::ifelse(seg3, wA3, 0.0f));
+            const float_4 wSaw   = simd::ifelse(seg3, wB3, 0.0f);
+
+            // Compute shapes
+            float_4 v_sin = sin2pi_pade_05_5_4(phase);
+            // Smoothly engage the folder with equal-power crossfade vs raw
+            {
+                const float_4 xt = 1.0f - 0.85f * timbre;
+                const float_4 folded = wavefolder(v_sin, xt);
+                const float_4 thetaF = timbre * float(M_PI_2);
+                const float_4 wRaw = simd::cos(thetaF);
+                const float_4 wF   = simd::sin(thetaF);
+                v_sin = wRaw * v_sin + wF * folded;
             }
-            osBuffer[i] = out;
+
+            float_4 v_tri;
+            {
+                const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase - 1.0);
+                const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
+                v_tri = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                const float_4 xt = 1.0f - 0.85f * timbre;
+                const float_4 folded = wavefolder(v_tri, xt);
+                const float_4 thetaF = timbre * float(M_PI_2);
+                const float_4 wRaw = simd::cos(thetaF);
+                const float_4 wF   = simd::sin(thetaF);
+                v_tri = wRaw * v_tri + wF * folded;
+            }
+
+            float_4 v_saw;
+            {
+                const float_4 dpwOrder1 = 2 * phase - 1.0;
+                const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
+                v_saw = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                const float_4 xt = 1.0f - 0.85f * timbre;
+                const float_4 folded = wavefolder(v_saw, xt);
+                const float_4 thetaF = timbre * float(M_PI_2);
+                const float_4 wRaw = simd::cos(thetaF);
+                const float_4 wF   = simd::sin(thetaF);
+                v_saw = wRaw * v_saw + wF * folded;
+            }
+
+            float_4 v_pulse;
+            {
+                // Collapse PW toward saw edge during Pulse->Saw morph to preserve fundamental
+                const float targetPW = limitPW ? 0.95f : 0.999f;
+                const float_4 pwEff = pw + (targetPW - pw) * wSaw;
+                float_4 dpwOrder1 = simd::ifelse(phase < 1. - pwEff, +1.0, -1.0);
+                dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pwEff) : 0.f;
+                float_4 saw = aliasSuppressedSaw(phases);
+                float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pwEff);
+                const float_4 pulseDCEff = (!removePulseDC) * 2.f * (0.5f - pwEff);
+                float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCEff;
+                v_pulse = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+                v_pulse *= 0.3f; // loudness trim
+            }
+
+            // Segmented equal-power sum across Sine, Tri, Pulse, Saw
+            osBuffer[i] = wSin * v_sin + wTri * v_tri + wPulse * v_pulse + wSaw * v_saw;
         }
 
         return (oversamplingRatio > 1) ? oversampler.downsample() : oversampler.getOSBuffer()[0];
@@ -182,7 +224,7 @@ private:
         return (sawOffsetBuff[0] - 2.0 * sawOffsetBuff[1] + sawOffsetBuff[2]);
     }
     float_4 wavefolder(float_4 x, float_4 xt) {
-        return stage1.process(x, xt);
+        return stage2.process(stage1.process(x, xt));
     }
 
     chowdsp::VariableOversampling<6, float_4> oversampler;
@@ -192,5 +234,4 @@ private:
     FoldStage2T<float_4> stage2;
     float_4 phase = 0.f;
 };
-
 

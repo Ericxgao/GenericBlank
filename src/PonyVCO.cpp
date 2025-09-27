@@ -133,8 +133,8 @@ struct PonyVCO : Module {
 		auto octParam = configSwitch(OCT_PARAM, 0.f, 6.f, 4.f, "Octave", {"C1", "C2", "C3", "C4", "C5", "C6", "C7"});
 		octParam->snapEnabled = true;
 
-        auto waveParam = configSwitch(WAVE_PARAM, 0.f, 3.f, 0.f, "Wave", {"Sin", "Triangle", "Sawtooth", "Pulse"});
-        waveParam->snapEnabled = true;
+		// Refactor: use continuous morph 0..3 across Sin->Tri->Saw->Pulse (equal-power xfade)
+		configParam(WAVE_PARAM, 0.f, 3.f, 0.f, "Wave morph");
 
 		configInput(TZFM_INPUT, "Through-zero FM");
 		configInput(TIMBRE_INPUT, "Timber (wavefolder/PWM)");
@@ -170,7 +170,9 @@ struct PonyVCO : Module {
 		const int rangeIndex = params[RANGE_PARAM].getValue();
 		const bool lfoMode = rangeIndex == 3;
 
-        const Waveform waveform = (Waveform) params[WAVE_PARAM].getValue();
+		// Continuous waveform morph: 0..3 maps Sin->Tri->Saw->Pulse
+		float waveMorph = params[WAVE_PARAM].getValue();
+		waveMorph = clamp(waveMorph, 0.f, 3.f);
 		const float mult = lfoMode ? 1.0 : dsp::FREQ_C4;
 		const float baseFreq = std::pow(2, (int)(params[OCT_PARAM].getValue() - 3)) * mult;
 		const int oversamplingRatio = lfoMode ? 1 : oversampler[0].getOversamplingRatio();
@@ -208,16 +210,12 @@ struct PonyVCO : Module {
 			// for it to be added back in for hardware compatibility reasons
 			const float_4 pulseDCOffset = (!removePulseDC) * 2.f * (0.5f - pw);
 
-            // hard sync
-            const float_4 syncMask = syncTrigger[c / 4].process(inputs[SYNC_INPUT].getPolyVoltageSimd<float_4>(c));
-            if (waveform == WAVE_SIN) {
-                // hardware waveform is actually cos, so pi/2 phase offset is required
-                // - variable phase is defined on [0, 1] rather than [0, 2pi] so pi/2 -> 0.25
-                phase[c / 4] = simd::ifelse(syncMask, 0.25f, phase[c / 4]);
-            }
-            else {
-                phase[c / 4] = simd::ifelse(syncMask, 0.f, phase[c / 4]);
-            }
+			// hard sync with sine-friendly reset near morph=0
+			const float_4 syncMask = syncTrigger[c / 4].process(inputs[SYNC_INPUT].getPolyVoltageSimd<float_4>(c));
+			// Blend reset phase from 0.25 (cos) at morph=0 down to 0 at morph>=0.5
+			float syncResetScalar = 0.25f * std::max(0.f, (0.5f - waveMorph) * 2.f);
+			float_4 syncReset = syncResetScalar;
+			phase[c / 4] = simd::ifelse(syncMask, syncReset, phase[c / 4]);
 
 			float_4* osBuffer = oversampler[c / 4].getOSBuffer();
 			for (int i = 0; i < oversamplingRatio; ++i) {
@@ -226,47 +224,71 @@ struct PonyVCO : Module {
 				// ensure within [0, 1]
 				phase[c / 4] -= simd::floor(phase[c / 4]);
 
-                if (waveform == WAVE_SIN) {
-                    osBuffer[i] = sin2pi_pade_05_5_4(phase[c / 4]);
-                }
-                else {
-                    // Build phases for DPW-based shapes
-                    float_4 phases[3];
-                    phases[0] = phase[c / 4] - 2 * deltaBasePhase + simd::ifelse(phase[c / 4] < 2 * deltaBasePhase, 1.f, 0.f);
-                    phases[1] = phase[c / 4] - deltaBasePhase + simd::ifelse(phase[c / 4] < deltaBasePhase, 1.f, 0.f);
-                    phases[2] = phase[c / 4];
+				// Build phases for DPW-based shapes
+				float_4 phases[3];
+				phases[0] = phase[c / 4] - 2 * deltaBasePhase + simd::ifelse(phase[c / 4] < 2 * deltaBasePhase, 1.f, 0.f);
+				phases[1] = phase[c / 4] - deltaBasePhase + simd::ifelse(phase[c / 4] < deltaBasePhase, 1.f, 0.f);
+				phases[2] = phase[c / 4];
 
-                    switch (waveform) {
-                        case WAVE_TRI: {
-                            const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase[c / 4] - 1.0);
-                            const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
-                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                            break;
-                        }
-                        case WAVE_SAW: {
-                            const float_4 dpwOrder1 = 2 * phase[c / 4] - 1.0;
-                            const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
-                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                            break;
-                        }
-                        case WAVE_PULSE: {
-                            float_4 dpwOrder1 = simd::ifelse(phase[c / 4] < 1. - pw, +1.0, -1.0);
-                            dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pw) : 0.f;
-                            float_4 saw = aliasSuppressedSaw(phases);
-                            float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
-                            float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
-                            osBuffer[i] = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
-                            // Small trim to better match perceived loudness vs other shapes
-                            osBuffer[i] *= 0.3f;
-                            break;
-                        }
-                        default: break;
-                    }
-                }
+				// Determine segment and equal-power weights
+				int seg = std::min(2, std::max(0, (int)std::floor(waveMorph)));
+				float localT = waveMorph - (float)seg;
+				float theta = localT * (0.5f * M_PI);
+				float aW = std::cos(theta);
+				float bW = std::sin(theta);
 
-                if (waveform != WAVE_PULSE) {
-                    osBuffer[i] = wavefolder(osBuffer[i], (1 - 0.85 * timbre), c);
-                }
+				float_4 a = aW;
+				float_4 b = bW;
+
+				// Generate two adjacent shapes
+				float_4 outA = 0.f;
+				float_4 outB = 0.f;
+				if (seg == 0) {
+					// Sin -> Tri (apply wavefolder to both)
+					outA = sin2pi_pade_05_5_4(phase[c / 4]);
+					{
+						const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase[c / 4] - 1.0);
+						const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
+						outB = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+					}
+					outA = wavefolder(outA, (1 - 0.85 * timbre), c);
+					outB = wavefolder(outB, (1 - 0.85 * timbre), c);
+				}
+				else if (seg == 1) {
+					// Tri -> Saw (apply wavefolder to both)
+					{
+						const float_4 dpwOrder1 = 1.0 - 2.0 * simd::abs(2 * phase[c / 4] - 1.0);
+						const float_4 dpwOrder3 = aliasSuppressedTri(phases) * denominatorInv;
+						outA = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+					}
+					{
+						const float_4 dpwOrder1 = 2 * phase[c / 4] - 1.0;
+						const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
+						outB = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+					}
+					outA = wavefolder(outA, (1 - 0.85 * timbre), c);
+					outB = wavefolder(outB, (1 - 0.85 * timbre), c);
+				}
+				else {
+					// Saw -> Pulse (wavefolder only on saw)
+					{
+						const float_4 dpwOrder1 = 2 * phase[c / 4] - 1.0;
+						const float_4 dpwOrder3 = aliasSuppressedSaw(phases) * denominatorInv;
+						outA = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+						outA = wavefolder(outA, (1 - 0.85 * timbre), c);
+					}
+					{
+						float_4 dpwOrder1 = simd::ifelse(phase[c / 4] < 1. - pw, +1.0, -1.0);
+						dpwOrder1 -= removePulseDC ? 2.f * (0.5f - pw) : 0.f;
+						float_4 saw = aliasSuppressedSaw(phases);
+						float_4 sawOffset = aliasSuppressedOffsetSaw(phases, pw);
+						float_4 dpwOrder3 = (sawOffset - saw) * denominatorInv + pulseDCOffset;
+						outB = simd::ifelse(lowFreqRegime, dpwOrder1, dpwOrder3);
+						outB *= 0.3f; // loudness trim as before
+					}
+				}
+
+				osBuffer[i] = a * outA + b * outB;
 
 			} 	// end of oversampling loop
 
