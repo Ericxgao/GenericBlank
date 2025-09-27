@@ -291,6 +291,15 @@ struct DrumVoice : Module {
         res01 = clamp(res01, 0.f, 1.f);
         float_4 resonance = simd::pow(simd::clamp(float_4(res01), 0.f, 1.f), 2) * 2.5f;
 
+        // Derive VCA gain from filter envelope (0..1), with exponential response and hard close
+        float vcaGain01 = ldrEnvOut01;
+        // Simple exponential mapping (square law)
+        vcaGain01 = vcaGain01 * vcaGain01;
+        // Hard close near zero to avoid denorms
+        if (vcaGain01 < 1e-6f)
+            vcaGain01 = 0.f;
+        const float_4 vcaGain = float_4(vcaGain01);
+
         for (int c = 0; c < channels; c += 4) {
             const simd::float_4 a = voiceANorm[c / 4];
             const simd::float_4 b = voiceBNorm[c / 4];
@@ -306,7 +315,7 @@ struct DrumVoice : Module {
             ladder[c / 4].setResonance(resonance);
             ladder[c / 4].process(mixNorm, args.sampleTime);
             const simd::float_4 filtered = ladder[c / 4].lowpass();
-            const simd::float_4 mixScaled = 5.f * filtered;
+            const simd::float_4 mixScaled = 5.f * (filtered * vcaGain);
             const simd::float_4 aScaled = 5.f * a;
             const simd::float_4 bScaled = 5.f * b;
             const simd::float_4 ringScaled = 5.f * ringed;
